@@ -1,0 +1,31 @@
+name: Email Daily Digest
+
+on:
+  schedule:
+    # 每天 UTC 00:30 = 北京时间 08:30
+    # 在 AI 预测生成 (UTC 00:00 / 北京 08:00) 之后运行，确保邮件含最新预测
+    - cron: '30 0 * * *'
+    # 每天 UTC 10:00 = 北京时间 18:00（下午推送）
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.x'
+
+      - name: Send daily digest email
+        run: python3 email_daily_digest.py
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}

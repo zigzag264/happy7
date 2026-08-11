@@ -1,0 +1,995 @@
+# -*- coding: utf-8 -*-
+"""
+大乐透 AI 预测自动生成脚本
+自动调用 AI 模型生成下期大乐透预测数据
+"""
+
+import json
+import os
+import sys
+import time as time_module
+from datetime import datetime, timedelta
+from openai import OpenAI
+from openai import (
+    APITimeoutError,
+    RateLimitError,
+    APIConnectionError,
+    InternalServerError,
+    AuthenticationError,
+    NotFoundError,
+    BadRequestError,
+)
+from typing import Dict, Any, Optional
+
+# ==================== 配置区 ====================
+# 默认 API 配置（通过环境变量设置，用于多数模型）
+BASE_URL = os.environ.get("AI_BASE_URL")
+API_KEY = os.environ.get("AI_API_KEY")
+
+# 模型配置列表（每个模型可单独配置 api_key / base_url，留空则用默认凭证）
+# 每模型可单独配置：streaming 支持、超时、温度、重试次数
+MODELS = [
+    {
+        "id": "deepseek-v3",
+        "name": "DeepSeek V3",
+        "model_id": "deepseek-v3",
+        "supports_streaming": True,
+        "timeout": 240,
+        "temperature": 0.8,
+        "max_retries": 2,
+    },
+    {
+        "id": "deepseek-v3.2-exp",
+        "name": "DeepSeek V3.2 Exp",
+        "model_id": "deepseek-v3.2-exp",
+        "supports_streaming": True,
+        "timeout": 240,
+        "temperature": 0.8,
+        "max_retries": 2,
+    },
+    {
+        "id": "tongyi-xiaomi-analysis-pro",
+        "name": "Tongyi Analysis Pro",
+        "model_id": "tongyi-xiaomi-analysis-pro",
+        "supports_streaming": True,
+        "timeout": 240,
+        "temperature": 0.8,
+        "max_retries": 2,
+    },
+    {
+        "id": "Moonshot-Kimi-K2-Instruct",
+        "name": "Kimi K2",
+        "model_id": "Moonshot-Kimi-K2-Instruct",
+        "supports_streaming": True,
+        "timeout": 240,
+        "temperature": 0.8,
+        "max_retries": 2,
+    },
+    {
+        "id": "qwen3.7-flash-2026-07-15",
+        "name": "Qwen 3.7 Flash (07-15)",
+        "model_id": "qwen3.7-flash-2026-07-15",
+        "supports_streaming": True,
+        "timeout": 240,
+        "temperature": 0.8,
+        "max_retries": 2,
+        # 推理模型：reasoning_effort=low 抑制推理深度，减少 token 消耗和耗时
+        # max_tokens 限制可见输出长度，迫使模型更简洁
+        "reasoning_effort": "low",
+        "max_tokens": 4096,
+    },
+]
+
+# 文件路径
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOTTERY_HISTORY_FILE = os.path.join(SCRIPT_DIR, "data", "lottery_history.json")
+AI_PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, "data", "ai_predictions.json")
+PREDICTIONS_HISTORY_FILE = os.path.join(SCRIPT_DIR, "data", "predictions_history.json")
+TOKEN_USAGE_FILE = os.path.join(SCRIPT_DIR, "data", "token_usage.json")
+PROMPT_FILE = os.path.join(SCRIPT_DIR, "doc", "prompt2.0.md")
+
+# ==================== 工具函数 ====================
+
+def load_prompt_template() -> str:
+    """加载 Prompt 模板文件"""
+    try:
+        with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        print(f"❌ 加载 Prompt 文件失败: {str(e)}")
+        raise
+
+def load_lottery_history() -> Dict[str, Any]:
+    """加载历史开奖数据"""
+    try:
+        with open(LOTTERY_HISTORY_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ 加载历史数据失败: {str(e)}")
+        raise
+
+def get_next_draw_date() -> str:
+    """
+    根据大乐透开奖规则（每周一、三、六 21:25）计算下期开奖日期
+    返回 YYYY-MM-DD 格式
+    """
+    today = datetime.now()
+    weekday = today.weekday()  # 0=周一, 1=周二, 2=周三, 3=周四, 4=周五, 5=周六, 6=周日
+
+    # 开奖日: 周二(1), 周四(3), 周日(6)
+    draw_weekdays = [0, 2, 5]
+
+    # 如果今天是开奖日且未到开奖时间(21:15)，则预测今天
+    if weekday in draw_weekdays:
+        draw_time = today.replace(hour=21, minute=25, second=0, microsecond=0)
+        if today < draw_time:
+            return today.strftime("%Y-%m-%d")
+
+    # 否则找下一个开奖日
+    for days_ahead in range(1, 8):
+        future_date = today + timedelta(days=days_ahead)
+        if future_date.weekday() in draw_weekdays:
+            return future_date.strftime("%Y-%m-%d")
+
+    # 理论上不会到这里
+    return today.strftime("%Y-%m-%d")
+
+def get_openai_client(api_key: str = None, base_url: str = None, default_timeout: int = 120) -> OpenAI:
+    """获取 OpenAI 客户端（支持自定义凭证）"""
+    return OpenAI(
+        api_key=api_key or API_KEY,
+        base_url=base_url or BASE_URL,
+        timeout=default_timeout,
+        max_retries=0
+    )
+
+def extract_json_from_response(response_text: str) -> str:
+    """从 AI 响应中提取 JSON 内容"""
+    # 去除可能的 markdown 标记
+    text = response_text.strip()
+
+    # 如果有 ```json 标记，提取中间的内容
+    if "```json" in text:
+        start = text.find("```json") + 7
+        end = text.find("```", start)
+        text = text[start:end].strip()
+    elif "```" in text:
+        start = text.find("```") + 3
+        end = text.find("```", start)
+        text = text[start:end].strip()
+
+    return text
+
+# ==================== 模型调用核心 ====================
+
+def _build_messages(prompt: str) -> list:
+    """构建统一的 messages 列表"""
+    return [
+        {
+            "role": "system",
+            "content": "你是一个专业的彩票数据分析师，擅长基于历史数据进行模式分析和预测。请严格按照要求返回 JSON 格式数据，不要有任何额外的解释或说明。禁止输出任何推理、思考、分析过程（reasoning/thinking/CoT）。禁止使用 reasoning、thinking 等标签包裹内容。直接输出最终 JSON 结果。"
+        },
+        {
+            "role": "user",
+            "content": prompt
+        }
+    ]
+
+
+def _call_with_streaming(client: OpenAI, model_config: dict, prompt: str):
+    """流式模式调用，返回 (完整响应文本, token用量dict)"""
+    timeout = model_config.get("timeout", 120)
+    response_text = ""
+    usage = {}
+
+    stream_kwargs = dict(
+        model=model_config["id"],
+        messages=_build_messages(prompt),
+        temperature=model_config.get("temperature", 0.8),
+        stream=True,
+        stream_options={"include_usage": True},
+        timeout=timeout + 60,  # 流式较慢，额外加 60s
+    )
+    # 推理模型默认会输出大量推理链，
+    # 用 reasoning_effort=low 抑制推理深度，大幅减少 token 消耗和耗时
+    # 推理模型用 max_completion_tokens 而非 max_tokens 来控制总输出
+    if "max_tokens" in model_config:
+        stream_kwargs["max_tokens"] = model_config["max_tokens"]
+    if "max_completion_tokens" in model_config:
+        stream_kwargs["max_completion_tokens"] = model_config["max_completion_tokens"]
+    if "reasoning_effort" in model_config:
+        stream_kwargs["reasoning_effort"] = model_config["reasoning_effort"]
+
+    stream = client.chat.completions.create(**stream_kwargs)
+
+    for chunk in stream:
+        if getattr(chunk, "usage", None):
+            usage = {
+                "prompt_tokens": chunk.usage.prompt_tokens,
+                "completion_tokens": chunk.usage.completion_tokens,
+                "total_tokens": chunk.usage.total_tokens,
+            }
+            continue
+        if chunk.choices:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                response_text += delta.content
+
+    return response_text.strip(), usage
+
+
+def _call_without_streaming(client: OpenAI, model_config: dict, prompt: str):
+    """非流式模式调用，返回 (完整响应文本, token用量dict)"""
+    timeout = model_config.get("timeout", 120)
+
+    create_kwargs = dict(
+        model=model_config["id"],
+        messages=_build_messages(prompt),
+        temperature=model_config.get("temperature", 0.8),
+        stream=False,
+        timeout=timeout,
+    )
+    if "max_tokens" in model_config:
+        create_kwargs["max_tokens"] = model_config["max_tokens"]
+    if "max_completion_tokens" in model_config:
+        create_kwargs["max_completion_tokens"] = model_config["max_completion_tokens"]
+    if "reasoning_effort" in model_config:
+        create_kwargs["reasoning_effort"] = model_config["reasoning_effort"]
+
+    response = client.chat.completions.create(**create_kwargs)
+
+    usage = {}
+    if getattr(response, "usage", None):
+        usage = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+
+    return response.choices[0].message.content.strip(), usage
+
+
+def _is_retryable_error(e: Exception) -> bool:
+    """判断错误是否可重试"""
+    return isinstance(e, (APITimeoutError, RateLimitError, APIConnectionError, InternalServerError))
+
+
+def _is_skip_error(e: Exception) -> bool:
+    """判断错误是否应跳过（不重试）"""
+    return isinstance(e, (AuthenticationError, NotFoundError, BadRequestError))
+
+
+def _format_usage(usage: dict) -> str:
+    """格式化 token 用量显示"""
+    if not usage:
+        return "token: N/A"
+    p = usage.get("prompt_tokens", 0)
+    c = usage.get("completion_tokens", 0)
+    t = usage.get("total_tokens", 0)
+    return f"token: ↑{p:,} ↓{c:,} ∑{t:,}"
+
+
+def _parse_prediction(response_text: str, model_name: str) -> Dict[str, Any]:
+    """从响应文本中提取并解析 JSON 预测数据"""
+    json_text = extract_json_from_response(response_text)
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError as e:
+        print(f"    ❌ {model_name} JSON 解析失败: {e}")
+        print(f"    原始响应前500字符:\n{response_text[:500]}")
+        raise
+
+
+def call_ai_model(client: OpenAI, model_config: dict, prompt: str) -> Optional[Dict[str, Any]]:
+    """
+    调用 AI 模型获取预测（带自动流式回退 + 重试）
+
+    流程：
+      1. 若模型支持 streaming → 尝试流式调用
+      2. 流式失败 → 自动回退到非流式
+      3. 对可重试错误（超时/限流/断连/500）进行重试
+      4. 对不可重试错误（认证/模型不存在/参数错误）直接跳过
+    """
+    model_name = model_config["name"]
+    max_retries = model_config.get("max_retries", 2)
+    usage = {}
+
+    # ---- 尝试流式调用 ----
+    if model_config.get("supports_streaming", True):
+        for attempt in range(max_retries + 1):
+            try:
+                t0 = time_module.time()
+                response_text, usage = _call_with_streaming(client, model_config, prompt)
+                elapsed = time_module.time() - t0
+                prediction = _parse_prediction(response_text, model_name)
+                print(f"    ✅ 流式成功 | 耗时: {elapsed:.1f}s | 响应: {len(response_text)} 字符 | {_format_usage(usage)}")
+                return prediction, usage
+
+            except json.JSONDecodeError:
+                # JSON 解析失败不可重试
+                return None, usage
+            except Exception as e:
+                if _is_skip_error(e):
+                    print(f"    ❌ 流式调用失败 (不可恢复): {type(e).__name__}")
+                    print(f"       {e}")
+                    break  # 不再尝试流式，进入非流式回退
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    print(f"    ⚠️ 流式调用失败 (第{attempt+1}次): {type(e).__name__}")
+                    print(f"       {e}")
+                    print(f"    ℹ️  等待 {wait}s 后重试...")
+                    time_module.sleep(wait)
+                else:
+                    print(f"    ❌ 流式调用失败 ({max_retries+1}次均失败): {type(e).__name__}")
+                    print(f"       {e}")
+
+        # 流式全部失败 → 回退到非流式
+        print(f"    ℹ️  回退到非流式模式...")
+
+    # ---- 非流式调用 ----
+    for attempt in range(max_retries + 1):
+        try:
+            t0 = time_module.time()
+            response_text, usage = _call_without_streaming(client, model_config, prompt)
+            elapsed = time_module.time() - t0
+            prediction = _parse_prediction(response_text, model_name)
+            print(f"    ✅ 非流式成功 | 耗时: {elapsed:.1f}s | 响应: {len(response_text)} 字符 | {_format_usage(usage)}")
+            return prediction, usage
+
+        except json.JSONDecodeError:
+            return None, usage
+        except Exception as e:
+            if _is_skip_error(e):
+                print(f"    ❌ 非流式调用失败 (不可恢复): {type(e).__name__}")
+                print(f"       {e}")
+                return None, usage
+            if attempt < max_retries:
+                wait = 2 ** attempt
+                print(f"    ⚠️ 非流式调用失败 (第{attempt+1}次): {type(e).__name__}")
+                print(f"       {e}")
+                print(f"    ℹ️  等待 {wait}s 后重试...")
+                time_module.sleep(wait)
+            else:
+                print(f"    ❌ 非流式调用失败 ({max_retries+1}次均失败): {type(e).__name__}")
+                print(f"       {e}")
+                return None, usage
+
+def validate_prediction(prediction: Dict[str, Any]) -> bool:
+    """验证预测数据格式（大乐透 5+2）"""
+    try:
+        # 检查必需字段
+        required_fields = ["prediction_date", "target_period", "model_id", "model_name", "predictions"]
+        for field in required_fields:
+            if field not in prediction:
+                print(f"    ⚠️  缺少字段: {field}")
+                return False
+
+        # 检查预测组数量（应4组）
+        if len(prediction["predictions"]) != 4:
+            print(f"    ⚠️  预测组数量不正确: {len(prediction['predictions'])}（应为4组）")
+            return False
+
+        # 检查策略名是否互不相同
+        strategies = [g["strategy"] for g in prediction["predictions"]]
+        if len(set(strategies)) != 4:
+            print(f"    ⚠️  策略名存在重复: {strategies}")
+            return False
+
+        # 检查每组预测
+        seen_groups = set()
+        for group in prediction["predictions"]:
+            # 检查前区
+            if len(group["front_balls"]) != 5:
+                print(f"    ⚠️  前区数量不正确: {len(group['front_balls'])}")
+                return False
+
+            # 检查前区是否排序
+            sorted_fronts = sorted(group["front_balls"])
+            if group["front_balls"] != sorted_fronts:
+                print(f"    ⚠️  前区未排序: {group['front_balls']}")
+                return False
+
+            # 检查前区范围（01-35）
+            for b in group["front_balls"]:
+                if not (b.isdigit() and 1 <= int(b) <= 35):
+                    print(f"    ⚠️  前区超出范围: {b}")
+                    return False
+
+            # 检查后区
+            if len(group["back_balls"]) != 2:
+                print(f"    ⚠️  后区数量不正确: {len(group['back_balls'])}")
+                return False
+
+            # 检查后区范围（01-12）
+            for b in group["back_balls"]:
+                if not b.isdigit() or not (1 <= int(b) <= 12):
+                    print(f"    ⚠️  后区超出范围: {b}")
+                    return False
+
+            # 检查后区是否排序
+            sorted_backs = sorted(group["back_balls"])
+            if group["back_balls"] != sorted_backs:
+                print(f"    ⚠️  后区未排序: {group['back_balls']}")
+                return False
+
+            # 检查重复组（前区+后区完全相同）
+            group_key = (tuple(group["front_balls"]), tuple(group["back_balls"]))
+            if group_key in seen_groups:
+                print(f"    ⚠️  存在完全重复的预测组: {group['front_balls']} + {group['back_balls']}")
+                return False
+            seen_groups.add(group_key)
+
+            # 检查前区数组内是否有重复号码
+            if len(set(group["front_balls"])) != 5:
+                print(f"    ⚠️  前区存在重复号码: {group['front_balls']}")
+                return False
+
+            # 检查后区数组内是否有重复号码
+            if len(set(group["back_balls"])) != 2:
+                print(f"    ⚠️  后区存在重复号码: {group['back_balls']}")
+                return False
+
+        return True
+
+    except Exception as e:
+        print(f"    ⚠️  验证出错: {str(e)}")
+        return False
+
+def save_token_usage(diagnostics: list, target_period: str, prediction_date: str):
+    """将本次各模型的 token 用量追加到 data/token_usage.json"""
+    try:
+        records = []
+        if os.path.exists(TOKEN_USAGE_FILE):
+            with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
+                records = json.load(f).get("records", [])
+
+        for d in diagnostics:
+            usage = d.get("usage") or {}
+            records.append({
+                "date": prediction_date,
+                "target_period": target_period,
+                "model_id": d.get("model_id", ""),
+                "model_name": d.get("name", ""),
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+                "elapsed_seconds": round(d.get("elapsed", 0), 1),
+                "success": d.get("status") == "✅ 成功",
+            })
+
+        with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
+            json.dump({"records": records}, f, ensure_ascii=False, indent=2)
+        print(f"  📊 已记录 {len(diagnostics)} 条 token 用量到 token_usage.json")
+    except Exception as e:
+        print(f"  ⚠️  保存 token 用量失败: {str(e)}")
+
+
+def generate_predictions() -> Dict[str, Any]:
+    """生成所有模型的预测"""
+    print("\n" + "="*50)
+    print("🤖 大乐透 AI 预测自动生成")
+    print("="*50 + "\n")
+
+    # 加载 Prompt 模板
+    print("📄 加载 Prompt 模板...")
+    try:
+        prompt_template = load_prompt_template()
+        print(f"  ✓ Prompt 模板加载成功 ({len(prompt_template)} 字符)\n")
+    except Exception as e:
+        print(f"  ✗ Prompt 模板加载失败: {str(e)}\n")
+        return None
+
+    # 加载历史数据
+    print("📊 加载历史开奖数据...")
+    lottery_data = load_lottery_history()
+
+    # 归档旧预测（如果已开奖）
+    archived = archive_old_prediction(lottery_data)
+
+    # 获取下期信息
+    next_draw = lottery_data.get("next_draw", {})
+    target_period = next_draw.get("next_period", "")
+    target_date = next_draw.get("next_date_display", "")
+
+    if not target_period:
+        print("❌ 无法获取下期期号信息")
+        return None
+
+    print(f"🎯 目标期号: {target_period}")
+    print(f"📅 开奖日期: {target_date}")
+    print(f"📝 历史数据: 最近 {len(lottery_data.get('data', []))} 期\n")
+
+    # 准备历史数据（最近30期）
+    history_data = lottery_data.get("data", [])[:30]
+    history_json = json.dumps(history_data, ensure_ascii=False, indent=2)
+
+    # 预测日期：根据开奖规则计算下期开奖日期
+    prediction_date = get_next_draw_date()
+    print(f"📅 预测日期: {prediction_date}\n")
+
+    # 存储所有模型的预测和诊断信息
+    all_predictions = []
+    diagnostics = []  # 每个模型一条诊断记录
+
+    # 逐个调用模型
+    print("🔮 开始生成预测...\n")
+    for model_config in MODELS:
+        model_name = model_config["name"]
+        model_api_key = model_config.get("api_key")
+        model_base_url = model_config.get("base_url")
+        # 每个模型使用自己的客户端（支持不同凭证）
+        resolved_api_key = model_api_key or os.environ.get("AI_API_KEY")
+        resolved_base_url = model_base_url or os.environ.get("AI_BASE_URL")
+        if not resolved_api_key or not resolved_base_url:
+            print(f"  ⚠️  {model_name}: 缺少 API 凭证，跳过\n")
+            diagnostics.append({
+                "name": model_name,
+                "model_id": model_config["model_id"],
+                "status": "❌ 失败",
+                "detail": "缺少 API 凭证",
+                "elapsed": 0,
+                "usage": {},
+            })
+            continue
+
+        client = get_openai_client(
+            api_key=resolved_api_key,
+            base_url=resolved_base_url,
+            default_timeout=model_config.get("timeout", 120)
+        )
+
+        t_start = time_module.time()
+        status = "❌ 失败"
+        detail = ""
+        usage = {}
+
+        try:
+            # 构建 prompt
+            prompt = prompt_template.format(
+                target_period=target_period,
+                target_date=target_date,
+                lottery_history=history_json,
+                prediction_date=prediction_date,
+                model_id=model_config['model_id'],
+                model_name=model_config['name']
+            )
+
+            # 推理模型追加硬约束：禁止输出任何推理链
+            if model_config.get("reasoning_effort"):
+                prompt += (
+                    "\n\n## 硬性约束\n"
+                    "（重要）无论任何情况下，都禁止输出思考过程、推理链、分析步骤。"
+                    "这一步对你的达标至关重要：直接输出上述 JSON 结构，不要包含任何其他文字。"
+                )
+
+            # 调用模型
+            prediction, usage = call_ai_model(client, model_config, prompt)
+
+            if prediction is None:
+                detail = "调用失败或解析失败"
+                print(f"  ✗ {model_name}: {detail}\n")
+            else:
+                # 先进行后处理（去重 + 防复读 + 补齐4组），再验证
+                prediction = post_process_prediction(prediction, lottery_data.get("data", []))
+                if validate_prediction(prediction):
+                    all_predictions.append(prediction)
+                    status = "✅ 成功"
+                    detail = "验证通过"
+                    print(f"  ✓ {model_name}: 验证通过\n")
+                else:
+                    detail = "验证失败（格式不正确）"
+                    print(f"  ✗ {model_name}: {detail}\n")
+
+        except Exception as e:
+            detail = f"{type(e).__name__}: {str(e)}"
+            print(f"  ✗ 处理 {model_name} 时异常: {detail}\n")
+
+        elapsed = time_module.time() - t_start
+        diagnostics.append({
+            "name": model_name,
+            "model_id": model_config["model_id"],
+            "status": "✅ 成功" if status == "✅ 成功" else "❌ 失败",
+            "detail": detail if detail else "成功",
+            "elapsed": elapsed,
+            "usage": usage,
+        })
+
+    # 打印诊断汇总表
+    print("\n" + "=" * 60)
+    print("📊 模型调用诊断汇总")
+    print("=" * 60)
+    for d in diagnostics:
+        elapsed_str = f"{d['elapsed']:.1f}s" if d['elapsed'] < 60 else f"{d['elapsed']/60:.1f}min"
+        token_str = _format_usage(d.get("usage", {}))
+        print(f"  {d['status']} | {d['name']:<8s} | {elapsed_str:>7s} | {token_str} | {d['detail']}")
+    print("=" * 60)
+    print(f"  总计: {sum(1 for d in diagnostics if d['status'] == '✅ 成功')}/{len(diagnostics)} 个模型成功\n")
+
+    # 记录 token 用量（无论是否全部成功）
+    save_token_usage(diagnostics, target_period, prediction_date)
+
+    # 构建最终输出
+    if not all_predictions:
+        print("❌ 没有成功生成任何预测")
+        if archived:
+            # 旧预测已归档但新预测失败，清空文件避免脏数据进入邮件推送
+            print("  ℹ️  旧预测已被归档，正在清空 ai_predictions.json...")
+            _clear_predictions_file()
+        return None
+
+    result = {
+        "prediction_date": prediction_date,
+        "target_period": target_period,
+        "models": all_predictions
+    }
+
+    print(f"✅ 成功生成 {len(all_predictions)}/{len(MODELS)} 个模型的预测\n")
+    return result
+
+def calculate_hit_result(prediction_group: Dict[str, Any], actual_result: Dict[str, Any]) -> Dict[str, Any]:
+    """计算单组预测的命中结果（大乐透 5+2）"""
+    front_hits = [b for b in prediction_group["front_balls"] if b in actual_result["front_balls"]]
+    back_hits = [b for b in prediction_group["back_balls"] if b in actual_result["back_balls"]]
+
+    return {
+        "front_hits": front_hits,
+        "front_hit_count": len(front_hits),
+        "back_hits": back_hits,
+        "back_hit_count": len(back_hits),
+        "total_hits": len(front_hits) + len(back_hits)
+    }
+
+def _front_hits_between(group_fronts: list, draw_fronts: list) -> int:
+    """计算两组前区号码的重合数"""
+    return len(set(group_fronts) & set(draw_fronts))
+
+
+def _repair_group(group: Dict[str, Any], recent_draws: list) -> Dict[str, Any]:
+    """
+    修复与近期开奖过于相似的预测组（大乐透 5+2）。
+    将重合过多的前区号码替换为同区间内近期出现较少的号码。
+    """
+    # 找出最近3期开奖
+    last3 = [d for d in recent_draws[:3] if isinstance(d, dict) and "front_balls" in d]
+    if not last3:
+        return group
+
+    new_fronts = list(group["front_balls"])
+    new_backs = list(group["back_balls"])
+
+    # 检查前区：与任何一期重合 ≥4 则修复（5个中4个已高度重合）
+    for draw in last3:
+        hits = _front_hits_between(new_fronts, draw["front_balls"])
+        if hits >= 4:
+            # 找出重合的号码
+            overlap = [b for b in new_fronts if b in draw["front_balls"]]
+            # 替换 1-2 个重合号码
+            replacements_needed = min(hits - 3, 2)  # 降到 3 重合以下
+            for _ in range(replacements_needed):
+                if not overlap:
+                    break
+                to_replace = overlap.pop(0)
+                # 确定该号码所在的区间
+                n = int(to_replace)
+                if n <= 12:
+                    candidates = [f"{i:02d}" for i in range(1, 13)]
+                elif n <= 24:
+                    candidates = [f"{i:02d}" for i in range(13, 25)]
+                else:
+                    candidates = [f"{i:02d}" for i in range(25, 36)]
+
+                # 排除当前组已有的号码
+                candidates = [c for c in candidates if c not in new_fronts]
+                # 排除近期开奖中该区间出现过的号码
+                for d in last3:
+                    candidates = [c for c in candidates if c not in d["front_balls"]]
+
+                if candidates:
+                    # 选区间内数值最接近的号码
+                    candidates.sort(key=lambda c: abs(int(c) - n))
+                    new_fronts.remove(to_replace)
+                    new_fronts.append(candidates[0])
+
+            new_fronts.sort()
+
+    # 检查后区：与最近3期任何一期后区号码重合则替换
+    if new_backs and any(b in new_backs for d in last3 for b in d.get("back_balls", [])):
+        all_backs = [f"{i:02d}" for i in range(1, 13)]
+        used = set()
+        for d in last3:
+            for b in d.get("back_balls", []):
+                used.add(b)
+        available = [b for b in all_backs if b not in used and b not in new_backs]
+        if available:
+            # 替换后区号码
+            new_backs = sorted(available[:2])
+
+    return {
+        "group_id": group["group_id"],
+        "strategy": group["strategy"],
+        "front_balls": new_fronts,
+        "back_balls": new_backs,
+        "description": group.get("description", "")
+    }
+
+
+def post_process_prediction(prediction: Dict[str, Any], history_data: list) -> Dict[str, Any]:
+    """
+    对模型预测进行后处理（大乐透 5+2）：
+    1. 去重：移除前区+后区完全相同的重复组
+    2. 防复读：修复与近期开奖太相似的组
+    3. 补齐：确保总是 4 组
+    """
+    recent_draws = [d for d in history_data if isinstance(d, dict) and "front_balls" in d and "back_balls" in d]
+
+    # 1. 去重
+    seen = set()
+    unique_groups = []
+    for g in prediction["predictions"]:
+        key = (tuple(g["front_balls"]), tuple(g["back_balls"]))
+        if key not in seen:
+            seen.add(key)
+            unique_groups.append(g)
+        else:
+            print(f"    ⚠️  发现重复组 (策略: {g['strategy']})，已移除")
+
+    # 2. 策略名归一化：确保4组使用不同策略名（热号/平衡/周期/综合）
+    canonical_strategies = ["热号追随者", "平衡策略师", "周期理论家", "综合决策者"]
+    # 找出缺失的策略名和重复策略
+    used = [g["strategy"] for g in unique_groups]
+    missing = [s for s in canonical_strategies if s not in used]
+    # 找出重复的策略并替换为缺失策略名
+    for i, g in enumerate(unique_groups):
+        if g["strategy"] not in canonical_strategies:
+            if missing:
+                old = g["strategy"]
+                g["strategy"] = missing.pop(0)
+                print(f"    ⚠️  策略「{old}」不规范，更名为「{g['strategy']}」")
+        elif used.count(g["strategy"]) > 1:
+            if missing:
+                old = g["strategy"]
+                g["strategy"] = missing.pop(0)
+                print(f"    ⚠️  策略「{old}」重复，更名为「{g['strategy']}」")
+
+    # 3. 防复读修复
+    repaired = []
+    for g in unique_groups:
+        # 检查是否与最近3期过于相似
+        needs_repair = False
+        for draw in recent_draws[:3]:
+            if _front_hits_between(g["front_balls"], draw["front_balls"]) >= 4:
+                needs_repair = True
+                print(f"    ⚠️  策略「{g['strategy']}」与 {draw.get('period', '?')} 期前区重合 ≥4，执行修复")
+                break
+        if needs_repair:
+            repaired.append(_repair_group(g, recent_draws))
+        else:
+            repaired.append(g)
+
+    # 4. 补齐到 4 组（如果去重或策略名修正后不足）
+    while len(repaired) < 4:
+        # 以最后一组为蓝本生成变体
+        template = repaired[-1] if repaired else unique_groups[0]
+        # 计算当前已使用的策略名，分配一个缺失的规范策略名
+        used_strategies = [g["strategy"] for g in repaired]
+        missing_strategies = [s for s in canonical_strategies if s not in used_strategies]
+        fill_strategy = missing_strategies[0] if missing_strategies else template["strategy"]
+        variant = {
+            "group_id": len(repaired) + 1,
+            "strategy": fill_strategy,
+            "front_balls": list(template["front_balls"]),
+            "back_balls": list(template["back_balls"]),
+        }
+        # 交换前区中的两个不同区间号码
+        fronts = list(variant["front_balls"])
+        # 找一个可替换的号码
+        all_fronts = [f"{i:02d}" for i in range(1, 36)]
+        available = [r for r in all_fronts if r not in fronts]
+        if available:
+            # 替换第 (len(repaired) % 5) 个位置
+            idx = len(repaired) % 5
+            old = fronts[idx]
+            # 找同区间可用的
+            n = int(old)
+            if n <= 12:
+                pool = [r for r in available if 1 <= int(r) <= 12]
+            elif n <= 24:
+                pool = [r for r in available if 13 <= int(r) <= 24]
+            else:
+                pool = [r for r in available if 25 <= int(r) <= 35]
+            if pool:
+                pool.sort(key=lambda r: abs(int(r) - n))
+                fronts[idx] = pool[0]
+                fronts.sort()
+        variant["front_balls"] = fronts
+        variant["back_balls"] = list(template["back_balls"])
+        variant["description"] = template.get("description", "")
+        repaired.append(variant)
+        print(f"    ⚠️  补齐第 {len(repaired)} 组预测")
+
+    # 重新编号 group_id
+    for i, g in enumerate(repaired):
+        g["group_id"] = i + 1
+
+    prediction["predictions"] = repaired
+    return prediction
+
+
+def archive_old_prediction(lottery_data: Dict[str, Any]) -> bool:
+    """将旧预测归档到历史记录（如果已开奖）。返回是否成功归档。"""
+    try:
+        # 检查是否存在旧预测文件
+        if not os.path.exists(AI_PREDICTIONS_FILE):
+            print("  ℹ️  没有旧预测需要归档\n")
+            return False
+
+        # 读取旧预测
+        with open(AI_PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+            old_predictions = json.load(f)
+
+        old_target_period = old_predictions.get("target_period")
+        if not old_target_period:
+            print("  ⚠️  旧预测文件格式异常，跳过归档\n")
+            return False
+
+        # 检查该期号是否已开奖
+        latest_period = lottery_data.get("data", [{}])[0].get("period")
+        if not latest_period or int(old_target_period) > int(latest_period):
+            # 兜底检测：若预测日期已过去较久仍未见开奖，多半是爬虫未更新数据
+            try:
+                pred_date = datetime.strptime(old_predictions.get("prediction_date", ""), "%Y-%m-%d")
+                days_passed = (datetime.now() - pred_date).days
+            except Exception:
+                days_passed = 0
+
+            if days_passed >= 3:
+                print(f"  ⚠️  旧预测期号 {old_target_period} 的预测日期已过去 {days_passed} 天仍未见开奖数据！")
+                print(f"  ⚠️  最新期号仅到 {latest_period}，请先运行爬虫更新开奖数据 (fetch_history/fetch_lottery_history.py)")
+                print(f"  ⚠️  否则该期预测将无法自动归档\n")
+            else:
+                print(f"  ℹ️  旧预测期号 {old_target_period} 尚未开奖，无需归档\n")
+            return False
+
+        print(f"  📦 旧预测期号 {old_target_period} 已开奖，开始归档...")
+
+        # 查找实际开奖结果
+        actual_result = None
+        for draw in lottery_data.get("data", []):
+            if draw.get("period") == old_target_period:
+                actual_result = draw
+                break
+
+        if not actual_result:
+            print(f"  ⚠️  找不到期号 {old_target_period} 的开奖结果，跳过归档\n")
+            return False
+
+        # 读取历史记录文件
+        history_data = {"predictions_history": []}
+        if os.path.exists(PREDICTIONS_HISTORY_FILE):
+            with open(PREDICTIONS_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                history_data = json.load(f)
+
+        # 检查该期号是否已存在
+        existing_record = next((r for r in history_data["predictions_history"]
+                               if r["target_period"] == old_target_period), None)
+
+        if existing_record:
+            print(f"  ℹ️  期号 {old_target_period} 已存在于历史记录中\n")
+            return False
+
+        # 为每个模型计算命中结果
+        models_with_hits = []
+        for model_data in old_predictions.get("models", []):
+            # 为每组预测计算命中
+            predictions_with_hits = []
+            for pred_group in model_data.get("predictions", []):
+                pred_with_hit = pred_group.copy()
+                pred_with_hit["hit_result"] = calculate_hit_result(pred_group, actual_result)
+                predictions_with_hits.append(pred_with_hit)
+
+            # 找出最佳预测组
+            best_pred = max(predictions_with_hits, key=lambda p: p["hit_result"]["total_hits"])
+
+            models_with_hits.append({
+                "model_id": model_data.get("model_id"),
+                "model_name": model_data.get("model_name"),
+                "predictions": predictions_with_hits,
+                "best_group": best_pred["group_id"],
+                "best_hit_count": best_pred["hit_result"]["total_hits"]
+            })
+
+        # 创建新的历史记录
+        new_record = {
+            "prediction_date": old_predictions.get("prediction_date"),
+            "target_period": old_target_period,
+            "actual_result": actual_result,
+            "models": models_with_hits
+        }
+
+        # 插入到历史记录顶部
+        history_data["predictions_history"].insert(0, new_record)
+
+        # 保存历史记录
+        with open(PREDICTIONS_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history_data, f, ensure_ascii=False, indent=2)
+
+        print(f"  ✅ 已将期号 {old_target_period} 的预测归档到历史记录")
+        print(f"  📊 归档模型数: {len(models_with_hits)}\n")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠️  归档旧预测时出错: {str(e)}")
+        print(f"  继续生成新预测...\n")
+        return False
+
+def _clear_predictions_file():
+    """清空当前 AI 预测文件（写入空结构），避免邮件推送展示过期货。"""
+    empty = {
+        "prediction_date": "",
+        "target_period": "",
+        "models": []
+    }
+    try:
+        with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(empty, f, ensure_ascii=False, indent=2)
+        print(f"  ✓ 已清空 {os.path.basename(AI_PREDICTIONS_FILE)}")
+    except Exception as e:
+        print(f"  ⚠️  清空预测文件失败: {e}")
+
+def save_predictions(predictions: Dict[str, Any]):
+    """保存预测数据到文件"""
+    try:
+        print("💾 保存预测数据...")
+
+        # 创建备份（写入 archive 目录）
+        if os.path.exists(AI_PREDICTIONS_FILE):
+            archive_dir = os.path.join(os.path.dirname(AI_PREDICTIONS_FILE), "archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            backup_file = os.path.join(archive_dir, f"ai_predictions_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            with open(AI_PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            with open(backup_file, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            print(f"  ✓ 已创建备份: {os.path.basename(backup_file)}")
+
+        # 保存新预测
+        with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(predictions, f, ensure_ascii=False, indent=2)
+
+        print(f"  ✓ 已保存到: {AI_PREDICTIONS_FILE}\n")
+
+    except Exception as e:
+        print(f"❌ 保存失败: {str(e)}")
+        raise
+
+def main():
+    """主函数"""
+    try:
+        # 生成预测
+        predictions = generate_predictions()
+
+        if predictions:
+            # 保存预测
+            save_predictions(predictions)
+
+            print("="*50)
+            print("🎉 预测生成完成！")
+            print("="*50 + "\n")
+
+            # 显示预测摘要
+            print("📋 预测摘要:")
+            print(f"  期号: {predictions['target_period']}")
+            print(f"  日期: {predictions['prediction_date']}")
+            print(f"  模型数量: {len(predictions['models'])}")
+            for model in predictions['models']:
+                print(f"    - {model['model_name']}")
+            print()
+        else:
+            print("❌ 预测生成失败")
+
+    except Exception as e:
+        print(f"\n❌ 程序执行出错: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    main()
