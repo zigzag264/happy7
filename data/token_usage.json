@@ -219,6 +219,50 @@
       "total_tokens": 15254,
       "elapsed_seconds": 64.1,
       "success": true
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "sensenova-6.8-flash-lite",
+      "model_name": "Sensenova 6.8 Flash Lite",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "elapsed_seconds": 0,
+      "success": false
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "deepseek-v4-flash",
+      "model_name": "DeepSeek V4 Flash",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "elapsed_seconds": 0,
+      "success": false
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "sensenova-6.8-flash-lite",
+      "model_name": "Sensenova 6.8 Flash Lite",
+      "prompt_tokens": 45258,
+      "completion_tokens": 39748,
+      "total_tokens": 85006,
+      "elapsed_seconds": 280.8,
+      "success": true
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "deepseek-v4-flash",
+      "model_name": "DeepSeek V4 Flash",
+      "prompt_tokens": 5194,
+      "completion_tokens": 8193,
+      "total_tokens": 13387,
+      "elapsed_seconds": 70.6,
+      "success": false
     }
   ]
 }
