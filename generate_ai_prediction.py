@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time as time_module
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from openai import OpenAI
 from openai import (
@@ -27,27 +28,34 @@ BASE_URL = os.environ.get("AI_BASE_URL")
 API_KEY = os.environ.get("AI_API_KEY")
 
 # 模型配置列表（每个模型可单独配置 api_key / base_url，留空则用默认凭证）
-# 每模型可单独配置：streaming 支持、超时、温度、重试次数
+# 每模型可单独配置：streaming 支持、超时、温度、重试次数、输出长度上限
 MODELS = [
     {
         "id": "sensenova-6.8-flash-lite",
         "name": "Sensenova 6.8 Flash Lite",
         "model_id": "sensenova-6.8-flash-lite",
         "supports_streaming": True,
-        "timeout": 240,
-        "temperature": 0.8,
-        "max_retries": 2,
+        "timeout": 60,               # 单次调用超时（秒）
+        "temperature": 0.7,          # 略降温度，减少发散、加快收敛
+        "max_retries": 1,            # 减少重试次数，避免长时间挂起
+        "max_completion_tokens": 1500,  # 限制输出长度，强制简洁 JSON，防止冗长
+        "reasoning_effort": "low",   # 抑制推理深度，大幅加速
     },
     {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
         "model_id": "deepseek-v4-flash",
         "supports_streaming": True,
-        "timeout": 240,
-        "temperature": 0.8,
-        "max_retries": 2,
+        "timeout": 60,
+        "temperature": 0.7,
+        "max_retries": 1,
+        "max_completion_tokens": 1500,
+        "reasoning_effort": "low",
     },
 ]
+
+# 全局硬性时间预算（秒）：整个预测流程最多运行这么久，防止无限等待
+GLOBAL_TIME_BUDGET = 180
 
 # 文件路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -147,17 +155,17 @@ def _build_messages(prompt: str) -> list:
 
 def _call_with_streaming(client: OpenAI, model_config: dict, prompt: str):
     """流式模式调用，返回 (完整响应文本, token用量dict)"""
-    timeout = model_config.get("timeout", 120)
+    timeout = model_config.get("timeout", 60)
     response_text = ""
     usage = {}
 
     stream_kwargs = dict(
         model=model_config["id"],
         messages=_build_messages(prompt),
-        temperature=model_config.get("temperature", 0.8),
+        temperature=model_config.get("temperature", 0.7),
         stream=True,
         stream_options={"include_usage": True},
-        timeout=timeout + 60,  # 流式较慢，额外加 60s
+        timeout=timeout + 30,  # 流式较慢，额外加 30s
     )
     # 推理模型默认会输出大量推理链，
     # 用 reasoning_effort=low 抑制推理深度，大幅减少 token 消耗和耗时
@@ -189,12 +197,12 @@ def _call_with_streaming(client: OpenAI, model_config: dict, prompt: str):
 
 def _call_without_streaming(client: OpenAI, model_config: dict, prompt: str):
     """非流式模式调用，返回 (完整响应文本, token用量dict)"""
-    timeout = model_config.get("timeout", 120)
+    timeout = model_config.get("timeout", 60)
 
     create_kwargs = dict(
         model=model_config["id"],
         messages=_build_messages(prompt),
-        temperature=model_config.get("temperature", 0.8),
+        temperature=model_config.get("temperature", 0.7),
         stream=False,
         timeout=timeout,
     )
@@ -433,6 +441,21 @@ def save_token_usage(diagnostics: list, target_period: str, prediction_date: str
         print(f"  ⚠️  保存 token 用量失败: {str(e)}")
 
 
+def format_compact_history(history_data: list) -> str:
+    """
+    将历史数据压缩为紧凑格式，大幅减少 token 占用。
+    原格式：30期完整 JSON（含日期字段）约 7KB
+    压缩后：约 1.2KB
+    """
+    lines = ["期号|前区|后区"]
+    for draw in history_data:
+        period = draw.get("period", "?")
+        fronts = " ".join(draw.get("front_balls", []))
+        backs = " ".join(draw.get("back_balls", []))
+        lines.append(f"{period}|{fronts}|{backs}")
+    return "\n".join(lines)
+
+
 def generate_predictions() -> Dict[str, Any]:
     """生成所有模型的预测"""
     print("\n" + "="*50)
@@ -468,9 +491,12 @@ def generate_predictions() -> Dict[str, Any]:
     print(f"📅 开奖日期: {target_date}")
     print(f"📝 历史数据: 最近 {len(lottery_data.get('data', []))} 期\n")
 
-    # 准备历史数据（最近30期）
+    # 准备历史数据（最近30期，使用紧凑格式减少 token 量）
     history_data = lottery_data.get("data", [])[:30]
-    history_json = json.dumps(history_data, ensure_ascii=False, indent=2)
+    history_json = format_compact_history(history_data)
+    compact_prompt_size = len(history_json)
+    orig_size = len(json.dumps(history_data, ensure_ascii=False, indent=2))
+    print(f"  📦 历史数据: {compact_prompt_size:,} bytes (压缩前: {orig_size:,} bytes, 节省 {orig_size - compact_prompt_size:,} bytes)")
 
     # 预测日期：根据开奖规则计算下期开奖日期
     prediction_date = get_next_draw_date()
@@ -479,41 +505,44 @@ def generate_predictions() -> Dict[str, Any]:
     # 存储所有模型的预测和诊断信息
     all_predictions = []
     diagnostics = []  # 每个模型一条诊断记录
+    start_time = time_module.time()
 
     # 逐个调用模型
     print("🔮 开始生成预测...\n")
-    for model_config in MODELS:
+
+    def process_one_model(model_config):
+        """处理单个模型（供并行调用）"""
         model_name = model_config["name"]
         model_api_key = model_config.get("api_key")
         model_base_url = model_config.get("base_url")
-        # 每个模型使用自己的客户端（支持不同凭证）
         resolved_api_key = model_api_key or os.environ.get("AI_API_KEY")
         resolved_base_url = model_base_url or os.environ.get("AI_BASE_URL")
+
         if not resolved_api_key or not resolved_base_url:
             print(f"  ⚠️  {model_name}: 缺少 API 凭证，跳过\n")
-            diagnostics.append({
+            return {
                 "name": model_name,
                 "model_id": model_config["model_id"],
                 "status": "❌ 失败",
                 "detail": "缺少 API 凭证",
                 "elapsed": 0,
                 "usage": {},
-            })
-            continue
+                "prediction": None,
+            }
 
         client = get_openai_client(
             api_key=resolved_api_key,
             base_url=resolved_base_url,
-            default_timeout=model_config.get("timeout", 120)
+            default_timeout=model_config.get("timeout", 60)
         )
 
         t_start = time_module.time()
         status = "❌ 失败"
         detail = ""
         usage = {}
+        prediction = None
 
         try:
-            # 构建 prompt
             prompt = prompt_template.format(
                 target_period=target_period,
                 target_date=target_date,
@@ -523,7 +552,6 @@ def generate_predictions() -> Dict[str, Any]:
                 model_name=model_config['name']
             )
 
-            # 推理模型追加硬约束：禁止输出任何推理链
             if model_config.get("reasoning_effort"):
                 prompt += (
                     "\n\n## 硬性约束\n"
@@ -531,17 +559,15 @@ def generate_predictions() -> Dict[str, Any]:
                     "这一步对你的达标至关重要：直接输出上述 JSON 结构，不要包含任何其他文字。"
                 )
 
-            # 调用模型
-            prediction, usage = call_ai_model(client, model_config, prompt)
+            pred_result, usage = call_ai_model(client, model_config, prompt)
 
-            if prediction is None:
+            if pred_result is None:
                 detail = "调用失败或解析失败"
                 print(f"  ✗ {model_name}: {detail}\n")
             else:
-                # 先进行后处理（去重 + 防复读 + 补齐4组），再验证
-                prediction = post_process_prediction(prediction, lottery_data.get("data", []))
-                if validate_prediction(prediction):
-                    all_predictions.append(prediction)
+                pred_result = post_process_prediction(pred_result, lottery_data.get("data", []))
+                if validate_prediction(pred_result):
+                    prediction = pred_result
                     status = "✅ 成功"
                     detail = "验证通过"
                     print(f"  ✓ {model_name}: 验证通过\n")
@@ -554,14 +580,36 @@ def generate_predictions() -> Dict[str, Any]:
             print(f"  ✗ 处理 {model_name} 时异常: {detail}\n")
 
         elapsed = time_module.time() - t_start
-        diagnostics.append({
+        return {
             "name": model_name,
             "model_id": model_config["model_id"],
             "status": "✅ 成功" if status == "✅ 成功" else "❌ 失败",
             "detail": detail if detail else "成功",
             "elapsed": elapsed,
             "usage": usage,
-        })
+            "prediction": prediction,
+        }
+
+    # 并行调用所有模型（提升速度）
+    with ThreadPoolExecutor(max_workers=len(MODELS)) as executor:
+        futures = {executor.submit(process_one_model, m): m for m in MODELS}
+        for future in as_completed(futures, timeout=GLOBAL_TIME_BUDGET):
+            try:
+                result = future.result()
+                diagnostics.append(result)
+                if result["prediction"]:
+                    all_predictions.append(result["prediction"])
+            except Exception as e:
+                model_name = futures[future].get("name", "?")
+                print(f"  ✗ {model_name} 并行执行异常: {e}\n")
+                diagnostics.append({
+                    "name": model_name,
+                    "model_id": futures[future].get("model_id", ""),
+                    "status": "❌ 失败",
+                    "detail": f"并行超时/异常: {e}",
+                    "elapsed": 0,
+                    "usage": {},
+                })
 
     # 打印诊断汇总表
     print("\n" + "=" * 60)
@@ -906,7 +954,7 @@ def _clear_predictions_file():
         print(f"  ⚠️  清空预测文件失败: {e}")
 
 def save_predictions(predictions: Dict[str, Any]):
-    """保存预测数据到文件"""
+    """保存预测数据到文件（保留已有的统计模型）"""
     try:
         print("💾 保存预测数据...")
 
@@ -920,6 +968,20 @@ def save_predictions(predictions: Dict[str, Any]):
             with open(backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
             print(f"  ✓ 已创建备份: {os.path.basename(backup_file)}")
+
+            # 从现有文件中提取统计模型（非 LLM 模型），保留它们
+            existing_models = backup_data.get("models", [])
+            stat_models = [m for m in existing_models
+                          if m.get("model_type") in ("statistical", "ml", "deep")]
+            if stat_models:
+                print(f"  📦 保留 {len(stat_models)} 个统计/ML模型")
+                new_llm = predictions.get("models", [])
+                # 只保留 LLM 模型（model_type 为 llm 或没有 model_type）
+                for m in new_llm:
+                    mtype = m.get("model_type", "llm")
+                    if mtype not in ("statistical", "ml", "deep"):
+                        stat_models.append(m)
+                predictions["models"] = stat_models
 
         # 保存新预测
         with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:

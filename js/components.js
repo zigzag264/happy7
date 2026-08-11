@@ -32,14 +32,35 @@ const Components = {
     /**
      * 获取模型头部样式类名
      * @param {string} modelName - 模型名称
+     * @param {string} modelType - 模型类型 (llm, statistical, ml, deep)
      * @returns {string} CSS 类名
      */
-    getModelHeaderClass(modelName) {
+    getModelHeaderClass(modelName, modelType) {
+        // 统计模型类型优先
+        if (modelType === 'statistical') return 'model-header-statistical';
+        if (modelType === 'ml') return 'model-header-ml';
+        if (modelType === 'deep') return 'model-header-deep';
+
+        // 原有 LLM 模型检测
         if (modelName.includes('DeepSeek')) return 'model-header-deepseek';
         if (modelName.includes('Qwen')) return 'model-header-qwen';
         if (modelName.includes('Tongyi')) return 'model-header-tongyi';
         if (modelName.includes('Kimi')) return 'model-header-kimi';
+        if (modelName.includes('Sensenova')) return 'model-header-sensenova';
         return 'model-header-deepseek';
+    },
+
+    /**
+     * 获取模型类型显示名称和标签
+     */
+    getModelTypeBadge(modelType) {
+        const badges = {
+            'llm': { text: 'LLM 大模型', cls: 'type-llm' },
+            'statistical': { text: '统计模型', cls: 'type-statistical' },
+            'ml': { text: '机器学习', cls: 'type-ml' },
+            'deep': { text: '深度学习', cls: 'type-deep' },
+        };
+        return badges[modelType] || badges['llm'];
     },
 
     /**
@@ -52,7 +73,8 @@ const Components = {
         const card = document.createElement('div');
         card.className = 'model-card';
 
-        const headerClass = this.getModelHeaderClass(model.model_name);
+        const headerClass = this.getModelHeaderClass(model.model_name, model.model_type);
+        const typeBadge = this.getModelTypeBadge(model.model_type);
 
         // 清理 model_id 以生成有效的 DOM ID（移除特殊字符）
         const safeModelId = model.model_id.replace(/[^a-zA-Z0-9-_]/g, '-');
@@ -80,9 +102,12 @@ const Components = {
                     </div>
                     <div class="model-name-wrapper">
                         <h3>${model.model_name}</h3>
-                        <div class="model-id">
-                            <span class="model-id-dot"></span>
-                            <span>Model: ${model.model_id}</span>
+                        <div class="model-meta-row">
+                            <div class="model-id">
+                                <span class="model-id-dot"></span>
+                                <span>Model: ${model.model_id}</span>
+                            </div>
+                            <span class="model-type-badge ${typeBadge.cls}">${typeBadge.text}</span>
                         </div>
                     </div>
                 </div>

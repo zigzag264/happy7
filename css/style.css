@@ -588,6 +588,33 @@ body::before {
 .model-header-kimi .model-id { color: rgba(255,255,255,0.7); }
 .model-header-kimi .model-id-dot { background: #4ade80; }
 
+.model-header-sensenova { background: linear-gradient(135deg, #1a1a2e, #16213e); color: #fff; }
+.model-header-sensenova .model-icon-box { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.3); color: #fff; }
+.model-header-sensenova .model-name-wrapper h3 { color: #fff; }
+.model-header-sensenova .model-id { color: rgba(255,255,255,0.7); }
+.model-header-sensenova .model-id-dot { background: #e94560; }
+
+/* 统计模型 - 蓝色系 */
+.model-header-statistical { background: linear-gradient(135deg, #1e3a5f, #3b82f6); color: #fff; }
+.model-header-statistical .model-icon-box { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.3); color: #fff; }
+.model-header-statistical .model-name-wrapper h3 { color: #fff; }
+.model-header-statistical .model-id { color: rgba(255,255,255,0.7); }
+.model-header-statistical .model-id-dot { background: #93c5fd; }
+
+/* 机器学习 - 绿色系 */
+.model-header-ml { background: linear-gradient(135deg, #065f46, #10b981); color: #fff; }
+.model-header-ml .model-icon-box { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.3); color: #fff; }
+.model-header-ml .model-name-wrapper h3 { color: #fff; }
+.model-header-ml .model-id { color: rgba(255,255,255,0.7); }
+.model-header-ml .model-id-dot { background: #6ee7b7; }
+
+/* 深度学习 - 橙色系 */
+.model-header-deep { background: linear-gradient(135deg, #7c2d12, #f97316); color: #fff; }
+.model-header-deep .model-icon-box { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.3); color: #fff; }
+.model-header-deep .model-name-wrapper h3 { color: #fff; }
+.model-header-deep .model-id { color: rgba(255,255,255,0.7); }
+.model-header-deep .model-id-dot { background: #fdba74; }
+
 .model-card-header-left {
     display: flex;
     align-items: center;
@@ -635,6 +662,74 @@ body::before {
     border-radius: 50%;
     background: var(--accent);
     flex-shrink: 0;
+}
+
+.model-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.model-type-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.model-type-badge.type-llm { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.model-type-badge.type-statistical { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.model-type-badge.type-ml { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.model-type-badge.type-deep { background: rgba(249, 115, 22, 0.15); color: #f97316; }
+
+/* 模型类型筛选按钮 */
+.model-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--gray-600);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.filter-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.filter-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.filter-count {
+    font-size: 11px;
+    background: rgba(128, 128, 128, 0.15);
+    padding: 1px 6px;
+    border-radius: 999px;
+}
+
+.filter-btn.active .filter-count {
+    background: rgba(255,255,255,0.25);
 }
 
 .model-card-header-right {

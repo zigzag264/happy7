@@ -18,6 +18,7 @@ async function initApp() {
 
         // 渲染UI
         renderHeroBanner();
+        renderModelFilters();
         renderModelsGrid();
         renderHistoryTab();
 
@@ -82,6 +83,50 @@ function renderHeroBanner() {
     }
 }
 
+// 当前模型类型筛选
+let currentModelFilter = 'all';
+
+// 渲染模型类型筛选按钮
+function renderModelFilters() {
+    const container = document.getElementById('modelFilters');
+    if (!container) return;
+
+    const filters = [
+        { key: 'all', label: '全部', count: appData.aiPredictions?.models?.length || 0 },
+        { key: 'llm', label: 'LLM 大模型', count: 0 },
+        { key: 'statistical', label: '统计模型', count: 0 },
+        { key: 'ml', label: '机器学习', count: 0 },
+        { key: 'deep', label: '深度学习', count: 0 },
+    ];
+
+    (appData.aiPredictions?.models || []).forEach(m => {
+        const type = m.model_type || 'llm';
+        const f = filters.find(x => x.key === type);
+        if (f) f.count += 1;
+    });
+
+    container.innerHTML = filters.map(f => `
+        <button class="filter-btn${f.key === currentModelFilter ? ' active' : ''}" data-filter="${f.key}">
+            ${f.label} <span class="filter-count">${f.count}</span>
+        </button>
+    `).join('');
+
+    container.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            currentModelFilter = btn.dataset.filter;
+            renderModelFilters();
+            renderModelsGrid();
+        });
+    });
+}
+
+// 获取筛选后的模型列表
+function getFilteredModels() {
+    const models = appData.aiPredictions?.models || [];
+    if (currentModelFilter === 'all') return models;
+    return models.filter(m => (m.model_type || 'llm') === currentModelFilter);
+}
+
 // 渲染模型网格
 function renderModelsGrid() {
     if (!appData.aiPredictions) return;
@@ -109,7 +154,7 @@ function renderModelsGrid() {
     }
 
     // 渲染每个模型
-    appData.aiPredictions.models.forEach(model => {
+    getFilteredModels().forEach(model => {
         const modelCard = Components.createModelCard(model, actualResult);
         modelsGridEl.appendChild(modelCard);
     });
