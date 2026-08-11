@@ -30,53 +30,22 @@ API_KEY = os.environ.get("AI_API_KEY")
 # 每模型可单独配置：streaming 支持、超时、温度、重试次数
 MODELS = [
     {
-        "id": "deepseek-v3",
-        "name": "DeepSeek V3",
-        "model_id": "deepseek-v3",
+        "id": "sensenova-6.8-flash-lite",
+        "name": "Sensenova 6.8 Flash Lite",
+        "model_id": "sensenova-6.8-flash-lite",
         "supports_streaming": True,
         "timeout": 240,
         "temperature": 0.8,
         "max_retries": 2,
     },
     {
-        "id": "deepseek-v3.2-exp",
-        "name": "DeepSeek V3.2 Exp",
-        "model_id": "deepseek-v3.2-exp",
+        "id": "deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "model_id": "deepseek-v4-flash",
         "supports_streaming": True,
         "timeout": 240,
         "temperature": 0.8,
         "max_retries": 2,
-    },
-    {
-        "id": "tongyi-xiaomi-analysis-pro",
-        "name": "Tongyi Analysis Pro",
-        "model_id": "tongyi-xiaomi-analysis-pro",
-        "supports_streaming": True,
-        "timeout": 240,
-        "temperature": 0.8,
-        "max_retries": 2,
-    },
-    {
-        "id": "Moonshot-Kimi-K2-Instruct",
-        "name": "Kimi K2",
-        "model_id": "Moonshot-Kimi-K2-Instruct",
-        "supports_streaming": True,
-        "timeout": 240,
-        "temperature": 0.8,
-        "max_retries": 2,
-    },
-    {
-        "id": "qwen3.7-flash-2026-07-15",
-        "name": "Qwen 3.7 Flash (07-15)",
-        "model_id": "qwen3.7-flash-2026-07-15",
-        "supports_streaming": True,
-        "timeout": 240,
-        "temperature": 0.8,
-        "max_retries": 2,
-        # 推理模型：reasoning_effort=low 抑制推理深度，减少 token 消耗和耗时
-        # max_tokens 限制可见输出长度，迫使模型更简洁
-        "reasoning_effort": "low",
-        "max_tokens": 4096,
     },
 ]
 
