@@ -29,7 +29,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install openai
 
-      - name: Run AI prediction generator
+      - name: Run statistical/ML models
+        run: python3 -m strategies.runner
+
+      - name: Run AI prediction generator (LLM models)
         run: python3 generate_ai_prediction.py
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}

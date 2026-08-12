@@ -30,7 +30,7 @@ jobs:
 
       - name: Run lottery data fetcher
         run: |
-          cd happy7/fetch_history
+          cd fetch_history
           python3 fetch_lottery_history.py
 
       - name: Check for changes
@@ -43,7 +43,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add happy7/data/lottery_history.json happy7/fetch_history/lottery_data.json
+          git add data/lottery_history.json fetch_history/lottery_data.json
           git commit -m "chore: auto-update lottery data $(date +'%Y-%m-%d %H:%M:%S')"
           git push
 

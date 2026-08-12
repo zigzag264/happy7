@@ -196,10 +196,8 @@ class BaseStrategy(ABC):
         pass
 
     def _build_output(self, predictions: List[Dict]) -> Dict:
-        """构建标准输出格式"""
+        """构建标准输出格式（顶层已有 prediction_date/target_period，模型层不再重复）"""
         return {
-            "prediction_date": self.prediction_date,
-            "target_period": self.target_period,
             "model_id": self.MODEL_ID,
             "model_name": self.MODEL_NAME,
             "model_type": self.MODEL_TYPE,

@@ -162,7 +162,7 @@ def save_predictions(output, output_file=None):
     """保存预测到文件"""
     target = output_file or AI_PREDICTIONS_FILE
 
-    # 备份现有文件
+    # 备份现有文件（保留漂亮格式方便人工查验）
     if os.path.exists(target):
         archive_dir = os.path.join(os.path.dirname(target), "archive")
         os.makedirs(archive_dir, exist_ok=True)
@@ -176,10 +176,17 @@ def save_predictions(output, output_file=None):
             json.dump(backup_data, f, ensure_ascii=False, indent=2)
         print(f"  ✓ 已备份: {os.path.basename(backup_file)}")
 
-    with open(target, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    # 剥离模型层冗余字段（顶层已有 prediction_date/target_period）
+    for model in output.get("models", []):
+        model.pop("prediction_date", None)
+        model.pop("target_period", None)
 
-    print(f"\n💾 已保存 {len(output.get('models', []))} 个模型预测到 {os.path.basename(target)}\n")
+    # 保存新预测（紧凑格式，生产环境用）
+    with open(target, 'w', encoding='utf-8') as f:
+        json_str = json.dumps(output, ensure_ascii=False, separators=(',', ':'))
+        f.write(json_str)
+
+    print(f"\n💾 已保存 {len(output.get('models', []))} 个模型预测到 {os.path.basename(target)}（紧凑格式，{len(json_str)} bytes）\n")
 
 
 def main():

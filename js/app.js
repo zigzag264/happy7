@@ -10,10 +10,21 @@ let appData = {
     tokenUsage: { records: [] }
 };
 
+// 全局错误处理
+window.onerror = function(msg, src, line, col, error) {
+    console.error('全局JS错误:', msg, 'at', src + ':' + line + ':' + col);
+    // 隐藏加载屏，避免白屏
+    const ls = document.getElementById('loadingScreen');
+    if (ls) ls.style.display = 'none';
+    const ma = document.getElementById('mainApp');
+    if (ma) ma.style.display = 'block';
+    return true;
+};
+
 // 初始化应用
 async function initApp() {
     try {
-        // 加载数据
+        // 加载数据（容错：单文件失败不阻塞整体）
         await loadAllData();
 
         // 渲染UI
@@ -24,32 +35,69 @@ async function initApp() {
 
         // 设置事件监听
         setupEventListeners();
-
-        // 隐藏加载屏幕
-        hideLoadingScreen();
     } catch (error) {
         console.error('初始化失败:', error);
-        alert('数据加载失败，请刷新页面重试');
+        showErrorInPage('数据加载异常: ' + error.message);
+    } finally {
+        // 无论成功还是失败，都隐藏加载屏并显示主界面
+        hideLoadingScreen();
     }
 }
 
-// 加载所有数据
-async function loadAllData() {
-    try {
-        const [lotteryHistory, aiPredictions, predictionsHistory, tokenUsage] = await Promise.all([
-            DataLoader.loadLotteryHistory(),
-            DataLoader.loadPredictions(),
-            DataLoader.loadPredictionsHistory(),
-            DataLoader.loadTokenUsage()
-        ]);
+// 在页面中显示错误信息（替代 alert）
+function showErrorInPage(message) {
+    const ma = document.getElementById('mainApp');
+    if (!ma) return;
+    // 移除已有错误提示
+    document.getElementById('errorBanner')?.remove();
+    const banner = document.createElement('div');
+    banner.id = 'errorBanner';
+    banner.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:10000;background:#fee;color:#c00;border:1px solid #f88;border-radius:8px;padding:10px 20px;font-size:14px;max-width:90vw;box-shadow:0 4px 12px rgba(0,0,0,0.15)';
+    banner.innerHTML = '⚠️ ' + message + '<button onclick="this.parentElement.remove()" style="margin-left:12px;cursor:pointer;background:none;border:none;color:#c00;font-size:16px">×</button>';
+    ma.appendChild(banner);
+    // 30秒后自动消失
+    setTimeout(() => banner.remove(), 30000);
+}
 
-        appData.lotteryHistory = lotteryHistory;
-        appData.aiPredictions = aiPredictions;
-        appData.predictionsHistory = predictionsHistory;
-        appData.tokenUsage = tokenUsage;
-    } catch (error) {
-        console.error('数据加载失败:', error);
-        throw error;
+// 加载所有数据（容错：单个文件失败不影响其他数据）
+async function loadAllData() {
+    const results = await Promise.allSettled([
+        DataLoader.loadLotteryHistory(),
+        DataLoader.loadPredictions(),
+        DataLoader.loadPredictionsHistory(),
+        DataLoader.loadTokenUsage()
+    ]);
+
+    // 历史开奖数据（必需）
+    if (results[0].status === 'fulfilled') {
+        appData.lotteryHistory = results[0].value;
+    } else {
+        console.error('加载历史开奖数据失败:', results[0].reason);
+        showErrorInPage('无法加载历史开奖数据，页面功能受限');
+    }
+
+    // AI 预测数据（必需）
+    if (results[1].status === 'fulfilled') {
+        appData.aiPredictions = results[1].value;
+    } else {
+        console.error('加载 AI 预测数据失败:', results[1].reason);
+        showErrorInPage('无法加载 AI 预测数据');
+    }
+
+    // 历史预测对比（可选）
+    if (results[2].status === 'fulfilled') {
+        appData.predictionsHistory = results[2].value;
+    } else {
+        console.warn('加载历史预测数据失败:', results[2].reason);
+        appData.predictionsHistory = { predictions_history: [] };
+    }
+
+    // Token 用量（可选）
+    if (results[3].status === 'fulfilled') {
+        appData.tokenUsage = results[3].value;
+    } else {
+        console.warn('加载 Token 用量数据失败:', results[3].reason);
+        appData.tokenUsage = { records: [] };
     }
 }
 
@@ -202,26 +250,39 @@ function renderTokenUsage() {
         return;
     }
 
-    // 按模型聚合
+    // 兼容旧格式：旧记录含 model_id 且无 period 字段，视为单条调用记录
+    const isLegacy = records[0] && !('period' in records[0]) && 'model_id' in records[0];
+
+    // 按模型聚合（新结构：records 按期聚合，每期含 models 对象）
     const stats = {};
-    records.forEach(r => {
-        const key = r.model_id || r.model_name;
-        const entry = stats[key] || {
-            modelName: r.model_name,
-            modelId: r.model_id,
+    const addModel = (modelId, m, retries) => {
+        const entry = stats[modelId] || {
+            modelName: m.name || m.model_name || modelId,
+            modelId: modelId,
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
             elapsed: 0,
             calls: 0,
+            periods: 0,
         };
-        entry.promptTokens += r.prompt_tokens || 0;
-        entry.completionTokens += r.completion_tokens || 0;
-        entry.totalTokens += r.total_tokens || 0;
-        entry.elapsed += r.elapsed_seconds || 0;
-        entry.calls += 1;
-        stats[key] = entry;
-    });
+        entry.promptTokens += m.prompt || m.prompt_tokens || 0;
+        entry.completionTokens += m.completion || m.completion_tokens || 0;
+        entry.totalTokens += m.total || m.total_tokens || 0;
+        entry.elapsed += m.elapsed || m.elapsed_seconds || 0;
+        entry.calls += retries || 1;
+        entry.periods += 1;
+        stats[modelId] = entry;
+    };
+
+    if (isLegacy) {
+        records.forEach(r => addModel(r.model_id || r.model_name, r, 1));
+    } else {
+        records.forEach(period => {
+            const models = period.models || {};
+            Object.entries(models).forEach(([modelId, m]) => addModel(modelId, m, m.retries || 1));
+        });
+    }
 
     const arr = Object.values(stats).sort((a, b) => b.totalTokens - a.totalTokens);
 
@@ -235,7 +296,7 @@ function renderTokenUsage() {
             <td class="token-total">${fmt(m.totalTokens)}</td>
             <td>${m.elapsed.toFixed(1)}s</td>
             <td>${m.calls}</td>
-            <td>${fmt(Math.round(m.totalTokens / m.calls))}</td>
+            <td>${fmt(Math.round(m.totalTokens / m.periods))}</td>
         </tr>
     `).join('');
 
@@ -245,7 +306,7 @@ function renderTokenUsage() {
         <div class="ranking-panel">
             <div class="ranking-header">
                 <span class="ranking-title">Token 用量排行</span>
-                <span class="ranking-sub">累计 ${records.length} 次调用 · 总耗时 ${totalElapsed.toFixed(1)}s</span>
+                <span class="ranking-sub">${records.length} 期数据 · 总耗时 ${totalElapsed.toFixed(1)}s</span>
             </div>
             <div class="token-table-wrap">
                 <table class="ranking-table token-table">
@@ -254,10 +315,10 @@ function renderTokenUsage() {
                             <th>模型</th>
                             <th>总Prompt输入</th>
                             <th>总输出</th>
-                            <th>总每次总计</th>
+                            <th>总计</th>
                             <th>总耗时</th>
                             <th>调用次数</th>
-                            <th>平均token</th>
+                            <th>期均token</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -303,9 +364,8 @@ function renderHitRankings() {
 
 // 构建单个时间窗口排行面板
 function buildRankingPanel(title, sub, records, dateFilter) {
-    // 收集该窗口内 每条记录的每个 模型+策略 的命中
-    // key = model_name + '|' + strategy
-    const stats = {};
+    // 按模型聚合（去掉策略分组）
+    const stats = {};  // key = model_name
     let hasLatest = false;
 
     records.forEach(rec => {
@@ -314,36 +374,45 @@ function buildRankingPanel(title, sub, records, dateFilter) {
         const adate = rec.actual_result?.date;
         if (!adate || !dateFilter(adate)) return;
         (rec.models || []).forEach(model => {
+            const key = model.model_name;
+            if (!key) return;
+            const entry = stats[key] || {
+                modelName: model.model_name,
+                totalHits: 0,
+                bestHit: 0,
+                games: 0,
+                frontTotal: 0,
+                backHits: 0,
+                currentHits: 0,
+                hitNumbers: '',
+            };
+            let bestPred = null;
+            let allFrontHits = new Set();
+            let allBackHits = new Set();
             (model.predictions || []).forEach(pred => {
                 const hr = pred.hit_result;
                 if (!hr) return;
-                const key = model.model_name + '|' + (pred.strategy || '—');
-                const entry = stats[key] || {
-                    modelName: model.model_name,
-                    strategy: pred.strategy || '—',
-                    totalHits: 0,
-                    bestHit: 0,
-                    games: 0,
-                    frontTotal: 0,
-                    backHits: 0,
-                    currentHits: 0,
-                    hitNumbers: '',
-                };
                 entry.totalHits += hr.total_hits || 0;
                 entry.games += 1;
                 entry.frontTotal += hr.front_hit_count || 0;
                 entry.backHits += hr.back_hit_count || 0;
                 if (hr.total_hits > entry.bestHit) entry.bestHit = hr.total_hits;
                 if (isLatest) {
-                    entry.currentHits = hr.total_hits || 0;
-                    const frontHits = hr.front_hits || [];
-                    const parts = [];
-                    if (frontHits.length) parts.push('前:' + frontHits.join(' '));
-                    if (hr.back_hit_count > 0) parts.push(`后✓${hr.back_hit_count}`);
-                    entry.hitNumbers = parts.join(' ') || '—';
+                    (hr.front_hits || []).forEach(n => allFrontHits.add(n));
+                    (hr.back_hits || []).forEach(n => allBackHits.add(n));
+                    if (!bestPred || (hr.total_hits || 0) > (bestPred.hit_result?.total_hits || 0)) {
+                        bestPred = pred;
+                    }
                 }
-                stats[key] = entry;
             });
+            if (isLatest) {
+                entry.currentHits = bestPred ? (bestPred.hit_result?.total_hits || 0) : 0;
+                const parts = [];
+                if (allFrontHits.size) parts.push('前:' + [...allFrontHits].sort().join(' '));
+                if (allBackHits.size) parts.push('后:' + [...allBackHits].sort().join(' '));
+                entry.hitNumbers = parts.join(' ') || '—';
+            }
+            stats[key] = entry;
         });
     });
 
@@ -371,8 +440,8 @@ function buildRankingPanel(title, sub, records, dateFilter) {
     if (isLatest) {
         // 最新一期：按 后区命中 → 本期命中数 排序
         arr.sort((a, b) => {
-            const aBack = a.hitNumbers.includes('后✓') ? 1 : 0;
-            const bBack = b.hitNumbers.includes('后✓') ? 1 : 0;
+            const aBack = a.hitNumbers.includes('后:') ? 1 : 0;
+            const bBack = b.hitNumbers.includes('后:') ? 1 : 0;
             return bBack - aBack || b.currentHits - a.currentHits;
         });
         top10 = arr.slice(0, 10);
@@ -388,12 +457,12 @@ function buildRankingPanel(title, sub, records, dateFilter) {
     const thead = document.createElement('thead');
     if (isLatest) {
         thead.innerHTML = '<tr>'
-            + '<th>#</th><th>模型</th><th>策略</th>'
+            + '<th>#</th><th>模型</th>'
             + '<th>本期命中</th><th>命中前区</th><th>后区</th>'
             + '</tr>';
     } else {
         thead.innerHTML = '<tr>'
-            + '<th>#</th><th>模型</th><th>策略</th>'
+            + '<th>#</th><th>模型</th>'
             + '<th>历史最多</th><th>累计前区</th><th>累计后区</th><th>总球数</th>'
             + '<th>期数</th></tr>';
     }
@@ -405,20 +474,22 @@ function buildRankingPanel(title, sub, records, dateFilter) {
         const rankClass = i === 0 ? ' rank-1' : i === 1 ? ' rank-2' : i === 2 ? ' rank-3' : '';
         const bestTag = e.bestHit >= 5 ? 'excellent' : e.bestHit >= 3 ? 'good' : '';
         if (isLatest) {
-            const frontHits = e.hitNumbers.split('后✓')[0].replace('前:', '').trim() || '—';
-            const backMark = e.hitNumbers.includes('后✓') ? '✓' : '—';
+            // 从 "前:03 07 12 后:02" 格式中提取前区和后区
+            const s = e.hitNumbers || '—';
+            const frontMatch = s.match(/前:(.+?)(?: 后:|$)/);
+            const backMatch = s.match(/后:(.+)/);
+            const frontHits = frontMatch ? frontMatch[1].trim() : '—';
+            const backHits = backMatch ? backMatch[1].trim() : '—';
             tr.innerHTML =
                 '<td class="rank-num' + rankClass + '">' + (i + 1) + '</td>' +
                 '<td class="rank-model">' + escHtml(e.modelName) + '</td>' +
-                '<td class="rank-strategy">' + escHtml(e.strategy) + '</td>' +
                 '<td class="rank-current">' + e.currentHits + ' 球</td>' +
                 '<td class="rank-hits">' + escHtml(frontHits) + '</td>' +
-                '<td class="rank-blue">' + backMark + '</td>';
+                '<td class="rank-blue">' + escHtml(backHits) + '</td>';
         } else {
             tr.innerHTML =
                 '<td class="rank-num' + rankClass + '">' + (i + 1) + '</td>' +
                 '<td class="rank-model">' + escHtml(e.modelName) + '</td>' +
-                '<td class="rank-strategy">' + escHtml(e.strategy) + '</td>' +
                 '<td class="rank-best ' + bestTag + '">' + e.bestHit + ' 球</td>' +
                 '<td class="rank-total">' + e.frontTotal + ' 球</td>' +
                 '<td class="rank-blue">' + e.backHits + ' 球</td>' +
@@ -479,10 +550,8 @@ function renderGroupedRankings() {
     // 按 总球数 降序排序
     const arr = Object.values(stats).sort((a, b) => b.totalHits - a.totalHits || b.backHits - a.backHits);
 
-    const strategyPanel = buildGroupedPanel('策略分组', '按 4 种策略统计命中（全部历史）', arr.filter(e => e.type === 'strategy'));
     const modelPanel = buildGroupedPanel('模型分组', '按 AI 模型统计命中（全部历史）', arr.filter(e => e.type === 'model'));
 
-    if (strategyPanel) container.appendChild(strategyPanel);
     if (modelPanel) container.appendChild(modelPanel);
 }
 

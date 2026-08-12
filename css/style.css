@@ -594,6 +594,7 @@ body::before {
 .model-header-sensenova .model-id { color: rgba(255,255,255,0.7); }
 .model-header-sensenova .model-id-dot { background: #e94560; }
 
+
 /* 统计模型 - 蓝色系 */
 .model-header-statistical { background: linear-gradient(135deg, #1e3a5f, #3b82f6); color: #fff; }
 .model-header-statistical .model-icon-box { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.3); color: #fff; }
@@ -1635,6 +1636,25 @@ body::before {
 .prize-desc {
     font-size: 0.75rem;
     color: var(--gray-500);
+}
+
+.prize-amount {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    margin-top: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.375rem;
+    display: inline-block;
+}
+
+.prize-固定 {
+    color: #d97706;
+    background: #fef3c7;
+}
+
+.prize-浮动 {
+    color: #dc2626;
+    background: #fee2e2;
 }
 
 .prize-rules-note {

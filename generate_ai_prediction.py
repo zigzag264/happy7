@@ -4,12 +4,13 @@
 自动调用 AI 模型生成下期大乐透预测数据
 """
 
+import argparse
 import json
 import os
 import sys
 import time as time_module
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from openai import OpenAI
 from openai import (
     APITimeoutError,
@@ -22,6 +23,9 @@ from openai import (
 )
 from typing import Dict, Any, Optional
 
+# ==================== 加载 .env 文件 ====================
+load_dotenv()
+
 # ==================== 配置区 ====================
 # 默认 API 配置（通过环境变量设置，用于多数模型）
 BASE_URL = os.environ.get("AI_BASE_URL")
@@ -31,31 +35,35 @@ API_KEY = os.environ.get("AI_API_KEY")
 # 每模型可单独配置：streaming 支持、超时、温度、重试次数、输出长度上限
 MODELS = [
     {
-        "id": "sensenova-6.8-flash-lite",
-        "name": "Sensenova 6.8 Flash Lite",
-        "model_id": "sensenova-6.8-flash-lite",
-        "supports_streaming": True,
-        "timeout": 60,               # 单次调用超时（秒）
-        "temperature": 0.7,          # 略降温度，减少发散、加快收敛
-        "max_retries": 1,            # 减少重试次数，避免长时间挂起
-        "max_completion_tokens": 1500,  # 限制输出长度，强制简洁 JSON，防止冗长
-        "reasoning_effort": "low",   # 抑制推理深度，大幅加速
+        "id": "glm-5.2",
+        "name": "GLM 5.2",
+        "model_id": "glm-5.2",
+        "supports_streaming": False,  # 流式下 response_format 被忽略，强制非流式
+        "timeout": 120,
+        "temperature": 0.7,
+        "max_retries": 2,
+        "max_completion_tokens": 4000,
+        "json_mode": True,
     },
     {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
         "model_id": "deepseek-v4-flash",
         "supports_streaming": True,
-        "timeout": 60,
+        "timeout": 120,
         "temperature": 0.7,
-        "max_retries": 1,
-        "max_completion_tokens": 1500,
+        "max_retries": 2,
+        "max_completion_tokens": 8000,
         "reasoning_effort": "low",
+        "json_mode": True,
     },
-]
+    ]
 
 # 全局硬性时间预算（秒）：整个预测流程最多运行这么久，防止无限等待
-GLOBAL_TIME_BUDGET = 180
+GLOBAL_TIME_BUDGET = 900
+
+# 命令行参数（由 main() 设置）
+FORCE_ARCHIVE = False
 
 # 文件路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -121,21 +129,74 @@ def get_openai_client(api_key: str = None, base_url: str = None, default_timeout
     )
 
 def extract_json_from_response(response_text: str) -> str:
-    """从 AI 响应中提取 JSON 内容"""
-    # 去除可能的 markdown 标记
+    """
+    从 AI 响应中提取 JSON 内容（鲁棒版）
+    处理推理模型在最终 JSON 前输出大量分析文字的情况
+    """
     text = response_text.strip()
 
-    # 如果有 ```json 标记，提取中间的内容
-    if "```json" in text:
-        start = text.find("```json") + 7
-        end = text.find("```", start)
-        text = text[start:end].strip()
-    elif "```" in text:
-        start = text.find("```") + 3
-        end = text.find("```", start)
-        text = text[start:end].strip()
+    # 1. 整体就是合法 JSON，直接返回
+    try:
+        json.loads(text)
+        return text
+    except Exception:
+        pass
 
-    return text
+    candidates = []
+
+    # 2. 收集所有 ```json / ``` 代码块内容
+    idx = 0
+    while True:
+        fence = text.find("```", idx)
+        if fence < 0:
+            break
+        lang_end = text.find("\n", fence)
+        if lang_end < 0:
+            break
+        lang = text[fence + 3:lang_end].strip()
+        content_start = lang_end + 1
+        close = text.find("```", content_start)
+        if close < 0:
+            break
+        if lang == "json" or lang == "" or "json" in lang:
+            candidates.append(text[content_start:close].strip())
+        idx = close + 3
+
+    # 3. 平衡括号扫描：从每个 { 出发，收集能完整闭合的 JSON 对象
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        depth = 0
+        for j in range(i, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[i:j + 1])
+                    break
+
+    # 4. 从后往前尝试解析，优先选择包含 predictions 键的完整预测 JSON
+    score_best = None
+    fallback_best = None
+    for cand in reversed(candidates):
+        try:
+            obj = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and "predictions" in obj:
+            return cand  # 完整预测结构，直接返回
+        if isinstance(obj, dict) and len(obj) > 1 and score_best is None:
+            score_best = cand  # 保留较大的 JSON 对象作为备选
+        if fallback_best is None:
+            fallback_best = cand
+    if score_best:
+        return score_best
+    if fallback_best:
+        return fallback_best
+
+    # 5. 兜底：返回最后一个候选（可能解析失败，由调用方处理）
+    return candidates[-1] if candidates else text
 
 # ==================== 模型调用核心 ====================
 
@@ -176,6 +237,8 @@ def _call_with_streaming(client: OpenAI, model_config: dict, prompt: str):
         stream_kwargs["max_completion_tokens"] = model_config["max_completion_tokens"]
     if "reasoning_effort" in model_config:
         stream_kwargs["reasoning_effort"] = model_config["reasoning_effort"]
+    if model_config.get("json_mode"):
+        stream_kwargs["response_format"] = {"type": "json_object"}
 
     stream = client.chat.completions.create(**stream_kwargs)
 
@@ -189,8 +252,14 @@ def _call_with_streaming(client: OpenAI, model_config: dict, prompt: str):
             continue
         if chunk.choices:
             delta = chunk.choices[0].delta
+            # 部分推理模型把内容输出在
+            # reasoning / reasoning_content 字段而非 content 字段
             if delta.content:
                 response_text += delta.content
+            else:
+                rc = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                if rc:
+                    response_text += rc
 
     return response_text.strip(), usage
 
@@ -212,6 +281,8 @@ def _call_without_streaming(client: OpenAI, model_config: dict, prompt: str):
         create_kwargs["max_completion_tokens"] = model_config["max_completion_tokens"]
     if "reasoning_effort" in model_config:
         create_kwargs["reasoning_effort"] = model_config["reasoning_effort"]
+    if model_config.get("json_mode"):
+        create_kwargs["response_format"] = {"type": "json_object"}
 
     response = client.chat.completions.create(**create_kwargs)
 
@@ -223,7 +294,13 @@ def _call_without_streaming(client: OpenAI, model_config: dict, prompt: str):
             "total_tokens": response.usage.total_tokens,
         }
 
-    return response.choices[0].message.content.strip(), usage
+    msg = response.choices[0].message
+    response_text = msg.content or ""
+    # 非流式下推理模型可能把内容放在 reasoning / reasoning_content 字段
+    if not response_text:
+        response_text = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
+
+    return response_text.strip(), usage
 
 
 def _is_retryable_error(e: Exception) -> bool:
@@ -247,14 +324,19 @@ def _format_usage(usage: dict) -> str:
 
 
 def _parse_prediction(response_text: str, model_name: str) -> Dict[str, Any]:
-    """从响应文本中提取并解析 JSON 预测数据"""
+    """从响应文本中提取并解析 JSON 预测数据，验证包含 predictions 键"""
     json_text = extract_json_from_response(response_text)
     try:
-        return json.loads(json_text)
+        obj = json.loads(json_text)
     except json.JSONDecodeError as e:
         print(f"    ❌ {model_name} JSON 解析失败: {e}")
         print(f"    原始响应前500字符:\n{response_text[:500]}")
         raise
+    if not isinstance(obj, dict) or "predictions" not in obj:
+        print(f"    ❌ {model_name} JSON 缺少 predictions 键")
+        print(f"    原始响应前200字符:\n{json_text[:200]}")
+        raise json.JSONDecodeError("Missing predictions key", json_text, 0)
+    return obj
 
 
 def call_ai_model(client: OpenAI, model_config: dict, prompt: str) -> Optional[Dict[str, Any]]:
@@ -283,15 +365,16 @@ def call_ai_model(client: OpenAI, model_config: dict, prompt: str) -> Optional[D
                 return prediction, usage
 
             except json.JSONDecodeError:
-                # JSON 解析失败不可重试
-                return None, usage
+                # JSON 解析失败 → 回退到非流式模式（非流式可能支持 json_mode）
+                print(f"    ⚠️ 流式返回非JSON内容，进入非流式回退")
+                break
             except Exception as e:
                 if _is_skip_error(e):
                     print(f"    ❌ 流式调用失败 (不可恢复): {type(e).__name__}")
                     print(f"       {e}")
                     break  # 不再尝试流式，进入非流式回退
                 if attempt < max_retries:
-                    wait = 2 ** attempt
+                    wait = 5 * (2 ** attempt) if isinstance(e, RateLimitError) else 2 ** attempt
                     print(f"    ⚠️ 流式调用失败 (第{attempt+1}次): {type(e).__name__}")
                     print(f"       {e}")
                     print(f"    ℹ️  等待 {wait}s 后重试...")
@@ -314,14 +397,22 @@ def call_ai_model(client: OpenAI, model_config: dict, prompt: str) -> Optional[D
             return prediction, usage
 
         except json.JSONDecodeError:
-            return None, usage
+            # 推理模型行为不稳定，返回非JSON时重试（可能下次成功）
+            if attempt < max_retries:
+                wait = 2 ** attempt
+                print(f"    ⚠️ 非流式返回非JSON内容 (第{attempt+1}次)")
+                print(f"    ℹ️  等待 {wait}s 后重试...")
+                time_module.sleep(wait)
+            else:
+                print(f"    ❌ 非流式返回非JSON内容 ({max_retries+1}次均失败)，放弃")
+                return None, usage
         except Exception as e:
             if _is_skip_error(e):
                 print(f"    ❌ 非流式调用失败 (不可恢复): {type(e).__name__}")
                 print(f"       {e}")
                 return None, usage
             if attempt < max_retries:
-                wait = 2 ** attempt
+                wait = 5 * (2 ** attempt) if isinstance(e, RateLimitError) else 2 ** attempt
                 print(f"    ⚠️ 非流式调用失败 (第{attempt+1}次): {type(e).__name__}")
                 print(f"       {e}")
                 print(f"    ℹ️  等待 {wait}s 后重试...")
@@ -334,8 +425,8 @@ def call_ai_model(client: OpenAI, model_config: dict, prompt: str) -> Optional[D
 def validate_prediction(prediction: Dict[str, Any]) -> bool:
     """验证预测数据格式（大乐透 5+2）"""
     try:
-        # 检查必需字段
-        required_fields = ["prediction_date", "target_period", "model_id", "model_name", "predictions"]
+        # 检查必需字段（模型层不再需要 prediction_date/target_period，顶层已有）
+        required_fields = ["model_id", "model_name", "predictions"]
         for field in required_fields:
             if field not in prediction:
                 print(f"    ⚠️  缺少字段: {field}")
@@ -412,31 +503,115 @@ def validate_prediction(prediction: Dict[str, Any]) -> bool:
         print(f"    ⚠️  验证出错: {str(e)}")
         return False
 
+def _migrate_legacy_token_records(old_records: list) -> list:
+    """将旧格式 token_usage 记录（每条一个模型）迁移为按期聚合的新格式"""
+    period_map = {}
+    for r in old_records:
+        key = r.get("target_period", "?")
+        if key not in period_map:
+            period_map[key] = {
+                "period": key,
+                "date": r.get("date", ""),
+                "models": {},
+            }
+        mid = r.get("model_id", "")
+        if mid not in period_map[key]["models"]:
+            period_map[key]["models"][mid] = {
+                "name": r.get("model_name", mid),
+                "prompt": 0,
+                "completion": 0,
+                "total": 0,
+                "elapsed": 0,
+                "retries": 0,
+                "ok": False,
+            }
+        m = period_map[key]["models"][mid]
+        m["prompt"] += r.get("prompt_tokens", 0)
+        m["completion"] += r.get("completion_tokens", 0)
+        m["total"] += r.get("total_tokens", 0)
+        m["elapsed"] = max(m["elapsed"], r.get("elapsed_seconds", 0))
+        m["retries"] += 1
+        if r.get("success"):
+            m["ok"] = True
+    return list(period_map.values())
+
+
 def save_token_usage(diagnostics: list, target_period: str, prediction_date: str):
-    """将本次各模型的 token 用量追加到 data/token_usage.json"""
+    """将本次各模型的 token 用量按期聚合存入 data/token_usage.json"""
     try:
+        # 按模型聚合诊断结果（同一模型可能有多次重试）
+        model_map = {}
+        for d in diagnostics:
+            mid = d.get("model_id", "")
+            if mid not in model_map:
+                model_map[mid] = []
+            model_map[mid].append(d)
+
+        # 构建聚合后的模型数据
+        models = {}
+        for mid, entries in model_map.items():
+            # 取最后一次成功的结果，若全部失败则取最后一次尝试
+            last = entries[-1]
+            usage = last.get("usage") or {}
+            last_ok = last.get("status") == "✅ 成功"
+
+            # 若有成功结果，优先取成功的那次
+            success_entries = [e for e in entries if e.get("status") == "✅ 成功"]
+            if success_entries:
+                chosen = success_entries[-1]
+                usage = chosen.get("usage") or {}
+            else:
+                chosen = last
+
+            models[mid] = {
+                "name": chosen.get("name", mid),
+                "prompt": usage.get("prompt_tokens", 0),
+                "completion": usage.get("completion_tokens", 0),
+                "total": usage.get("total_tokens", 0),
+                "elapsed": round(chosen.get("elapsed", 0), 1),
+                "retries": len(entries),
+                "ok": last_ok,
+            }
+
+        # 读取现有记录，合并或追加
         records = []
         if os.path.exists(TOKEN_USAGE_FILE):
-            with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
-                records = json.load(f).get("records", [])
+            try:
+                with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+                records = existing.get("records", [])
+                # 迁移旧格式：旧记录含 model_id 且无 period 字段，转换为新结构
+                if records and "period" not in records[0] and "model_id" in records[0]:
+                    records = _migrate_legacy_token_records(records)
+            except Exception:
+                records = []
 
-        for d in diagnostics:
-            usage = d.get("usage") or {}
-            records.append({
-                "date": prediction_date,
-                "target_period": target_period,
-                "model_id": d.get("model_id", ""),
-                "model_name": d.get("name", ""),
-                "prompt_tokens": usage.get("prompt_tokens", 0),
-                "completion_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-                "elapsed_seconds": round(d.get("elapsed", 0), 1),
-                "success": d.get("status") == "✅ 成功",
-            })
+        # 检查该期是否已有记录
+        existing_idx = None
+        for i, r in enumerate(records):
+            if r.get("period") == target_period:
+                existing_idx = i
+                break
+
+        new_record = {
+            "period": target_period,
+            "date": prediction_date,
+            "models": models,
+        }
+
+        if existing_idx is not None:
+            # 合并：更新已有期的模型数据（新增或覆盖）
+            records[existing_idx]["models"].update(models)
+            records[existing_idx]["date"] = prediction_date
+        else:
+            records.insert(0, new_record)
+
+        # 只保留最近 50 期记录
+        records = records[:50]
 
         with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"records": records}, f, ensure_ascii=False, indent=2)
-        print(f"  📊 已记录 {len(diagnostics)} 条 token 用量到 token_usage.json")
+            f.write(_compact_json({"records": records}))
+        print(f"  📊 已按期聚合 {len(diagnostics)} 条诊断记录 → token_usage.json（{len(models)} 个模型）")
     except Exception as e:
         print(f"  ⚠️  保存 token 用量失败: {str(e)}")
 
@@ -476,7 +651,7 @@ def generate_predictions() -> Dict[str, Any]:
     lottery_data = load_lottery_history()
 
     # 归档旧预测（如果已开奖）
-    archived = archive_old_prediction(lottery_data)
+    archived = archive_old_prediction(lottery_data, force=FORCE_ARCHIVE)
 
     # 获取下期信息
     next_draw = lottery_data.get("next_draw", {})
@@ -565,8 +740,14 @@ def generate_predictions() -> Dict[str, Any]:
                 detail = "调用失败或解析失败"
                 print(f"  ✗ {model_name}: {detail}\n")
             else:
-                pred_result = post_process_prediction(pred_result, lottery_data.get("data", []))
-                if validate_prediction(pred_result):
+                try:
+                    pred_result = post_process_prediction(pred_result, lottery_data.get("data", []))
+                except (KeyError, TypeError, AttributeError) as e:
+                    # JSON 结构不正确（如缺少 predictions 键），视为失败
+                    detail = f"JSON结构异常: {type(e).__name__}"
+                    print(f"  ✗ {model_name}: {detail}\n")
+                    pred_result = None
+                if pred_result and validate_prediction(pred_result):
                     prediction = pred_result
                     status = "✅ 成功"
                     detail = "验证通过"
@@ -590,26 +771,24 @@ def generate_predictions() -> Dict[str, Any]:
             "prediction": prediction,
         }
 
-    # 并行调用所有模型（提升速度）
-    with ThreadPoolExecutor(max_workers=len(MODELS)) as executor:
-        futures = {executor.submit(process_one_model, m): m for m in MODELS}
-        for future in as_completed(futures, timeout=GLOBAL_TIME_BUDGET):
-            try:
-                result = future.result()
-                diagnostics.append(result)
-                if result["prediction"]:
-                    all_predictions.append(result["prediction"])
-            except Exception as e:
-                model_name = futures[future].get("name", "?")
-                print(f"  ✗ {model_name} 并行执行异常: {e}\n")
-                diagnostics.append({
-                    "name": model_name,
-                    "model_id": futures[future].get("model_id", ""),
-                    "status": "❌ 失败",
-                    "detail": f"并行超时/异常: {e}",
-                    "elapsed": 0,
-                    "usage": {},
-                })
+    # 串行调用所有模型（避免并行触发 API 限流）
+    for model_config in MODELS:
+        try:
+            result = process_one_model(model_config)
+            diagnostics.append(result)
+            if result["prediction"]:
+                all_predictions.append(result["prediction"])
+        except Exception as e:
+            model_name = model_config.get("name", "?")
+            print(f"  ✗ {model_name} 执行异常: {e}\n")
+            diagnostics.append({
+                "name": model_name,
+                "model_id": model_config.get("model_id", ""),
+                "status": "❌ 失败",
+                "detail": f"异常: {e}",
+                "elapsed": 0,
+                "usage": {},
+            })
 
     # 打印诊断汇总表
     print("\n" + "=" * 60)
@@ -832,8 +1011,13 @@ def post_process_prediction(prediction: Dict[str, Any], history_data: list) -> D
     return prediction
 
 
-def archive_old_prediction(lottery_data: Dict[str, Any]) -> bool:
-    """将旧预测归档到历史记录（如果已开奖）。返回是否成功归档。"""
+def archive_old_prediction(lottery_data: Dict[str, Any], force: bool = False) -> bool:
+    """
+    将旧预测归档到历史记录（如果已开奖）。
+    返回是否成功归档。
+
+    force: 强制归档（即使预测期尚未开奖，也会用当前预测归档）
+    """
     try:
         # 检查是否存在旧预测文件
         if not os.path.exists(AI_PREDICTIONS_FILE):
@@ -851,7 +1035,11 @@ def archive_old_prediction(lottery_data: Dict[str, Any]) -> bool:
 
         # 检查该期号是否已开奖
         latest_period = lottery_data.get("data", [{}])[0].get("period")
-        if not latest_period or int(old_target_period) > int(latest_period):
+        if not latest_period:
+            print("  ⚠️  历史数据中无期号信息，跳过归档\n")
+            return False
+
+        if int(old_target_period) > int(latest_period):
             # 兜底检测：若预测日期已过去较久仍未见开奖，多半是爬虫未更新数据
             try:
                 pred_date = datetime.strptime(old_predictions.get("prediction_date", ""), "%Y-%m-%d")
@@ -862,10 +1050,18 @@ def archive_old_prediction(lottery_data: Dict[str, Any]) -> bool:
             if days_passed >= 3:
                 print(f"  ⚠️  旧预测期号 {old_target_period} 的预测日期已过去 {days_passed} 天仍未见开奖数据！")
                 print(f"  ⚠️  最新期号仅到 {latest_period}，请先运行爬虫更新开奖数据 (fetch_history/fetch_lottery_history.py)")
-                print(f"  ⚠️  否则该期预测将无法自动归档\n")
+                print(f"  ⚠️  否则该期预测将无法自动归档")
+                if force:
+                    print(f"  → 已启用 --force-archive，跳过开奖检查，直接归档\n")
+                else:
+                    print(f"  → 可使用 --force-archive 参数强制归档\n")
+                    return False
+            elif force:
+                print(f"  ℹ️  旧预测期号 {old_target_period} 尚未开奖，但 --force-archive 已启用，继续归档...")
             else:
-                print(f"  ℹ️  旧预测期号 {old_target_period} 尚未开奖，无需归档\n")
-            return False
+                print(f"  ℹ️  旧预测期号 {old_target_period} 尚未开奖（最新期号 {latest_period}），无需归档")
+                print(f"  → 开奖后再次运行本脚本会自动归档，或使用 --force-archive 参数强制归档\n")
+                return False
 
         print(f"  📦 旧预测期号 {old_target_period} 已开奖，开始归档...")
 
@@ -926,9 +1122,9 @@ def archive_old_prediction(lottery_data: Dict[str, Any]) -> bool:
         # 插入到历史记录顶部
         history_data["predictions_history"].insert(0, new_record)
 
-        # 保存历史记录
+        # 保存历史记录（紧凑格式）
         with open(PREDICTIONS_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history_data, f, ensure_ascii=False, indent=2)
+            f.write(_compact_json(history_data))
 
         print(f"  ✅ 已将期号 {old_target_period} 的预测归档到历史记录")
         print(f"  📊 归档模型数: {len(models_with_hits)}\n")
@@ -948,17 +1144,30 @@ def _clear_predictions_file():
     }
     try:
         with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(empty, f, ensure_ascii=False, indent=2)
+            f.write(_compact_json(empty))
         print(f"  ✓ 已清空 {os.path.basename(AI_PREDICTIONS_FILE)}")
     except Exception as e:
         print(f"  ⚠️  清空预测文件失败: {e}")
+
+def _strip_model_redundant_fields(predictions: Dict[str, Any]) -> Dict[str, Any]:
+    """移除模型层冗余的 prediction_date/target_period（已在顶层存储）"""
+    for model in predictions.get("models", []):
+        model.pop("prediction_date", None)
+        model.pop("target_period", None)
+    return predictions
+
+
+def _compact_json(data) -> str:
+    """紧凑 JSON 序列化（无空格换行，适合生产环境）"""
+    return json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+
 
 def save_predictions(predictions: Dict[str, Any]):
     """保存预测数据到文件（保留已有的统计模型）"""
     try:
         print("💾 保存预测数据...")
 
-        # 创建备份（写入 archive 目录）
+        # 创建备份（写入 archive 目录，保留漂亮格式方便人工查验）
         if os.path.exists(AI_PREDICTIONS_FILE):
             archive_dir = os.path.join(os.path.dirname(AI_PREDICTIONS_FILE), "archive")
             os.makedirs(archive_dir, exist_ok=True)
@@ -975,19 +1184,30 @@ def save_predictions(predictions: Dict[str, Any]):
                           if m.get("model_type") in ("statistical", "ml", "deep")]
             if stat_models:
                 print(f"  📦 保留 {len(stat_models)} 个统计/ML模型")
+                # 记录已存在的 model_id，避免重复
+                existing_ids = {m.get("model_id") for m in stat_models if m.get("model_id")}
                 new_llm = predictions.get("models", [])
-                # 只保留 LLM 模型（model_type 为 llm 或没有 model_type）
+                added = 0
                 for m in new_llm:
                     mtype = m.get("model_type", "llm")
-                    if mtype not in ("statistical", "ml", "deep"):
+                    mid = m.get("model_id", "")
+                    if mtype not in ("statistical", "ml", "deep") and mid not in existing_ids:
                         stat_models.append(m)
+                        if mid:
+                            existing_ids.add(mid)
+                            added += 1
+                if added:
+                    print(f"  ➕ 新增 {added} 个 LLM 模型")
                 predictions["models"] = stat_models
 
-        # 保存新预测
-        with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(predictions, f, ensure_ascii=False, indent=2)
+        # 剥离模型层冗余字段
+        predictions = _strip_model_redundant_fields(predictions)
 
-        print(f"  ✓ 已保存到: {AI_PREDICTIONS_FILE}\n")
+        # 保存新预测（紧凑格式，生产环境用）
+        with open(AI_PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+            f.write(_compact_json(predictions))
+
+        print(f"  ✓ 已保存到: {AI_PREDICTIONS_FILE}（紧凑格式，{len(_compact_json(predictions))} bytes）\n")
 
     except Exception as e:
         print(f"❌ 保存失败: {str(e)}")
@@ -995,6 +1215,19 @@ def save_predictions(predictions: Dict[str, Any]):
 
 def main():
     """主函数"""
+    global FORCE_ARCHIVE
+
+    parser = argparse.ArgumentParser(description='大乐透 AI 预测自动生成')
+    parser.add_argument('--force-archive', action='store_true',
+                        help='强制归档当前预测（即使尚未开奖），用于手动备份')
+    args = parser.parse_args()
+
+    if args.force_archive:
+        FORCE_ARCHIVE = True
+        print("=" * 50)
+        print("🔧 --force-archive 模式已启用")
+        print("=" * 50 + "\n")
+
     try:
         # 生成预测
         predictions = generate_predictions()
