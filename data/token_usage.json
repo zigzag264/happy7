@@ -263,6 +263,28 @@
       "total_tokens": 13387,
       "elapsed_seconds": 70.6,
       "success": false
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "sensenova-6.8-flash-lite",
+      "model_name": "Sensenova 6.8 Flash Lite",
+      "prompt_tokens": 47306,
+      "completion_tokens": 42014,
+      "total_tokens": 89320,
+      "elapsed_seconds": 370.1,
+      "success": true
+    },
+    {
+      "date": "2026-08-12",
+      "target_period": "26091",
+      "model_id": "deepseek-v4-flash",
+      "model_name": "DeepSeek V4 Flash",
+      "prompt_tokens": 5194,
+      "completion_tokens": 8193,
+      "total_tokens": 13387,
+      "elapsed_seconds": 68.1,
+      "success": false
     }
   ]
 }
