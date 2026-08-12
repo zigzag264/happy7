@@ -364,62 +364,58 @@ function renderHitRankings() {
 
 // 构建单个时间窗口排行面板
 function buildRankingPanel(title, sub, records, dateFilter) {
-    // 按模型聚合（去掉策略分组）
-    const stats = {};  // key = model_name
-    let hasLatest = false;
+    const isLatest = title === '最新一期';
+    const stats = {};
 
     records.forEach(rec => {
-        const isLatest = !hasLatest && records.indexOf(rec) === 0;
-        if (isLatest) hasLatest = true;
         const adate = rec.actual_result?.date;
         if (!adate || !dateFilter(adate)) return;
         (rec.models || []).forEach(model => {
-            const key = model.model_name;
-            if (!key) return;
-            const entry = stats[key] || {
-                modelName: model.model_name,
-                totalHits: 0,
-                bestHit: 0,
-                games: 0,
-                frontTotal: 0,
-                backHits: 0,
-                currentHits: 0,
-                hitNumbers: '',
-            };
-            let bestPred = null;
-            let allFrontHits = new Set();
-            let allBackHits = new Set();
-            (model.predictions || []).forEach(pred => {
-                const hr = pred.hit_result;
-                if (!hr) return;
-                entry.totalHits += hr.total_hits || 0;
-                entry.games += 1;
-                entry.frontTotal += hr.front_hit_count || 0;
-                entry.backHits += hr.back_hit_count || 0;
-                if (hr.total_hits > entry.bestHit) entry.bestHit = hr.total_hits;
-                if (isLatest) {
-                    (hr.front_hits || []).forEach(n => allFrontHits.add(n));
-                    (hr.back_hits || []).forEach(n => allBackHits.add(n));
-                    if (!bestPred || (hr.total_hits || 0) > (bestPred.hit_result?.total_hits || 0)) {
-                        bestPred = pred;
-                    }
-                }
-            });
             if (isLatest) {
-                entry.currentHits = bestPred ? (bestPred.hit_result?.total_hits || 0) : 0;
-                const parts = [];
-                if (allFrontHits.size) parts.push('前:' + [...allFrontHits].sort().join(' '));
-                if (allBackHits.size) parts.push('后:' + [...allBackHits].sort().join(' '));
-                entry.hitNumbers = parts.join(' ') || '—';
+                // 最新一期：按 模型+策略 逐行显示
+                (model.predictions || []).forEach(pred => {
+                    const hr = pred.hit_result;
+                    if (!hr) return;
+                    const key = model.model_name + '|' + (pred.strategy || '—');
+                    stats[key] = {
+                        modelName: model.model_name,
+                        strategy: pred.strategy || '—',
+                        totalHits: hr.total_hits || 0,
+                        frontHits: (hr.front_hits || []).join(' '),
+                        backHits: (hr.back_hits || []).join(' '),
+                        backCount: hr.back_hit_count || 0,
+                        frontCount: hr.front_hit_count || 0,
+                    };
+                });
+            } else {
+                // 本月/上月/本年：按模型聚合
+                const key = model.model_name;
+                if (!key) return;
+                const entry = stats[key] || {
+                    modelName: model.model_name,
+                    totalHits: 0,
+                    bestHit: 0,
+                    games: 0,
+                    frontTotal: 0,
+                    backHits: 0,
+                };
+                (model.predictions || []).forEach(pred => {
+                    const hr = pred.hit_result;
+                    if (!hr) return;
+                    entry.totalHits += hr.total_hits || 0;
+                    entry.games += 1;
+                    entry.frontTotal += hr.front_hit_count || 0;
+                    entry.backHits += hr.back_hit_count || 0;
+                    if (hr.total_hits > entry.bestHit) entry.bestHit = hr.total_hits;
+                });
+                stats[key] = entry;
             }
-            stats[key] = entry;
         });
     });
 
     const panel = document.createElement('div');
     panel.className = 'ranking-panel';
 
-    // 标题
     const header = document.createElement('div');
     header.className = 'ranking-header';
     header.innerHTML = '<span class="ranking-title">' + title + '</span>'
@@ -435,15 +431,10 @@ function buildRankingPanel(title, sub, records, dateFilter) {
         return panel;
     }
 
-    const isLatest = title === '最新一期';
     let top10;
     if (isLatest) {
-        // 最新一期：按 后区命中 → 本期命中数 排序
-        arr.sort((a, b) => {
-            const aBack = a.hitNumbers.includes('后:') ? 1 : 0;
-            const bBack = b.hitNumbers.includes('后:') ? 1 : 0;
-            return bBack - aBack || b.currentHits - a.currentHits;
-        });
+        // 最新一期：按 总命中球数 → 后区命中数 → 前区命中数 排序
+        arr.sort((a, b) => b.totalHits - a.totalHits || b.backCount - a.backCount || b.frontCount - a.frontCount);
         top10 = arr.slice(0, 10);
     } else {
         // 本月/上月/本年：按 总球数 → 累计后区 排序
@@ -451,14 +442,13 @@ function buildRankingPanel(title, sub, records, dateFilter) {
         top10 = arr.slice(0, 10);
     }
 
-    // 表格
     const table = document.createElement('table');
     table.className = 'ranking-table';
     const thead = document.createElement('thead');
     if (isLatest) {
         thead.innerHTML = '<tr>'
-            + '<th>#</th><th>模型</th>'
-            + '<th>本期命中</th><th>命中前区</th><th>后区</th>'
+            + '<th>#</th><th>模型</th><th>策略</th>'
+            + '<th>总命中</th><th>命中前区</th><th>命中后区</th>'
             + '</tr>';
     } else {
         thead.innerHTML = '<tr>'
@@ -474,18 +464,13 @@ function buildRankingPanel(title, sub, records, dateFilter) {
         const rankClass = i === 0 ? ' rank-1' : i === 1 ? ' rank-2' : i === 2 ? ' rank-3' : '';
         const bestTag = e.bestHit >= 5 ? 'excellent' : e.bestHit >= 3 ? 'good' : '';
         if (isLatest) {
-            // 从 "前:03 07 12 后:02" 格式中提取前区和后区
-            const s = e.hitNumbers || '—';
-            const frontMatch = s.match(/前:(.+?)(?: 后:|$)/);
-            const backMatch = s.match(/后:(.+)/);
-            const frontHits = frontMatch ? frontMatch[1].trim() : '—';
-            const backHits = backMatch ? backMatch[1].trim() : '—';
             tr.innerHTML =
                 '<td class="rank-num' + rankClass + '">' + (i + 1) + '</td>' +
                 '<td class="rank-model">' + escHtml(e.modelName) + '</td>' +
-                '<td class="rank-current">' + e.currentHits + ' 球</td>' +
-                '<td class="rank-hits">' + escHtml(frontHits) + '</td>' +
-                '<td class="rank-blue">' + escHtml(backHits) + '</td>';
+                '<td class="rank-strategy">' + escHtml(e.strategy) + '</td>' +
+                '<td class="rank-current">' + e.totalHits + ' 球</td>' +
+                '<td class="rank-hits">' + (e.frontHits || '—') + '</td>' +
+                '<td class="rank-blue">' + (e.backHits || '—') + '</td>';
         } else {
             tr.innerHTML =
                 '<td class="rank-num' + rankClass + '">' + (i + 1) + '</td>' +
