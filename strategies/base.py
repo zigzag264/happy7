@@ -163,7 +163,7 @@ class BaseStrategy(ABC):
 
     MODEL_ID: str = ""
     MODEL_NAME: str = ""
-    MODEL_TYPE: str = "statistical"  # llm, statistical, ml, deep
+    MODEL_TYPE: str = "statistical"  # statistical, ml, deep
 
     def __init__(self, history_data: List[Dict], target_period: str,
                  target_date: str, prediction_date: str):

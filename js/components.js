@@ -32,22 +32,15 @@ const Components = {
     /**
      * 获取模型头部样式类名
      * @param {string} modelName - 模型名称
-     * @param {string} modelType - 模型类型 (llm, statistical, ml, deep)
+     * @param {string} modelType - 模型类型 (statistical, ml, deep)
      * @returns {string} CSS 类名
      */
     getModelHeaderClass(modelName, modelType) {
-        // 统计模型类型优先
+        // 按模型类型返回头部样式
         if (modelType === 'statistical') return 'model-header-statistical';
         if (modelType === 'ml') return 'model-header-ml';
         if (modelType === 'deep') return 'model-header-deep';
-
-        // 原有 LLM 模型检测
-        if (modelName.includes('DeepSeek')) return 'model-header-deepseek';
-        if (modelName.includes('Qwen')) return 'model-header-qwen';
-        if (modelName.includes('Tongyi')) return 'model-header-tongyi';
-        if (modelName.includes('Kimi')) return 'model-header-kimi';
-        if (modelName.includes('Sensenova')) return 'model-header-sensenova';
-        return 'model-header-deepseek';
+        return 'model-header-statistical';
     },
 
     /**
@@ -55,12 +48,11 @@ const Components = {
      */
     getModelTypeBadge(modelType) {
         const badges = {
-            'llm': { text: 'LLM 大模型', cls: 'type-llm' },
             'statistical': { text: '统计模型', cls: 'type-statistical' },
             'ml': { text: '机器学习', cls: 'type-ml' },
             'deep': { text: '深度学习', cls: 'type-deep' },
         };
-        return badges[modelType] || badges['llm'];
+        return badges[modelType] || badges['statistical'];
     },
 
     /**

@@ -36,7 +36,7 @@ def test_prediction_file():
         # 统计各模型类型
         type_counts = {}
         for model in models:
-            mtype = model.get("model_type", "llm")
+            mtype = model.get("model_type", "statistical")
             type_counts[mtype] = type_counts.get(mtype, 0) + 1
         for mtype, count in type_counts.items():
             print(f"   - {mtype}: {count} 个")
@@ -49,7 +49,7 @@ def test_prediction_file():
         for model in models:
             model_name = model.get("model_name", "未知")
             model_id = model.get("model_id", "未知")
-            model_type = model.get("model_type", "llm")
+            model_type = model.get("model_type", "statistical")
             predictions = model.get("predictions", [])
 
             errors = []

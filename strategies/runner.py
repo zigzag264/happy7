@@ -4,10 +4,9 @@
 运行所有 10 个统计/机器学习模型，生成预测并保存
 
 用法：
-    python -m strategies.runner                  # 运行所有模型
-    python -m strategies.runner --models 1,2     # 只运行指定模型
-    python -m strategies.runner --merge          # 合并现有 LLM 预测
-    python -m strategies.runner --output f.json  # 指定输出文件
+    python -m strategies.runner              # 运行所有模型
+    python -m strategies.runner --models 1,2 # 只运行指定模型
+    python -m strategies.runner --output f.json # 指定输出文件
 """
 
 import os
@@ -28,7 +27,7 @@ AI_PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, "data", "ai_predictions.json")
 
 
 def run_all_strategies(history, target_period, target_date, prediction_date,
-                       models_to_run=None, merge_llm=True):
+                       models_to_run=None):
     """运行所有策略模型"""
     history_data = get_recent_draws(history, 30)
 
@@ -89,51 +88,11 @@ def run_all_strategies(history, target_period, target_date, prediction_date,
     print("=" * 60)
     print(f"  成功: {sum(1 for d in diagnostics if d['status'] == '✅ 成功')}/{len(diagnostics)}\n")
 
-    # 构建最终输出
-    if merge_llm and os.path.exists(AI_PREDICTIONS_FILE):
-        # 合并现有预测：保留 LLM 模型，替换统计模型
-        with open(AI_PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
-            existing = json.load(f)
-
-        # 只保留 LLM 模型（model_type 为 llm 或没有 model_type 字段）
-        llm_models = []
-        for m in existing.get("models", []):
-            mtype = m.get("model_type", "llm")
-            if mtype == "llm":
-                llm_models.append(m)
-
-        # 去重：按 model_id 去重，防止重复追加
-        seen_ids = set()
-        unique_llm = []
-        for m in llm_models:
-            mid = m.get("model_id", "")
-            if mid not in seen_ids:
-                seen_ids.add(mid)
-                unique_llm.append(m)
-
-        # 新的统计模型也去重
-        stat_ids = set()
-        unique_results = []
-        for m in results:
-            mid = m.get("model_id", "")
-            if mid not in stat_ids and mid not in seen_ids:
-                stat_ids.add(mid)
-                unique_results.append(m)
-
-        all_models = unique_llm + unique_results
-        output = {
-            "prediction_date": existing.get("prediction_date", prediction_date),
-            "target_period": existing.get("target_period", target_period),
-            "models": all_models,
-        }
-    else:
-        output = {
-            "prediction_date": prediction_date,
-            "target_period": target_period,
-            "models": results,
-        }
-
-    return output
+    return {
+        "prediction_date": prediction_date,
+        "target_period": target_period,
+        "models": results,
+    }
 
 
 def validate_output(prediction):
@@ -192,8 +151,6 @@ def save_predictions(output, output_file=None):
 def main():
     parser = argparse.ArgumentParser(description='大乐透策略模型运行器')
     parser.add_argument('--models', type=str, help='要运行的模型ID（逗号分隔）')
-    parser.add_argument('--replace', action='store_true',
-                        help='完全替换现有预测（默认保留 LLM 模型，仅更新统计模型）')
     parser.add_argument('--output', type=str, help='指定输出文件路径')
     parser.add_argument('--list', action='store_true', help='列出所有可用模型')
     args = parser.parse_args()
@@ -226,11 +183,9 @@ def main():
     print(f"🎯 目标期号: {target_period}")
     print(f"📅 开奖日期: {prediction_date}")
 
-    # 默认保留 LLM 模型，--replace 则完全覆盖
-    merge_llm = not args.replace
     output = run_all_strategies(
         history, target_period, target_date, prediction_date,
-        models_to_run=models_to_run, merge_llm=merge_llm
+        models_to_run=models_to_run
     )
 
     if output and output.get("models"):

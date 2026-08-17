@@ -141,14 +141,13 @@ function renderModelFilters() {
 
     const filters = [
         { key: 'all', label: '全部', count: appData.aiPredictions?.models?.length || 0 },
-        { key: 'llm', label: 'LLM 大模型', count: 0 },
         { key: 'statistical', label: '统计模型', count: 0 },
         { key: 'ml', label: '机器学习', count: 0 },
         { key: 'deep', label: '深度学习', count: 0 },
     ];
 
     (appData.aiPredictions?.models || []).forEach(m => {
-        const type = m.model_type || 'llm';
+        const type = m.model_type || 'statistical';
         const f = filters.find(x => x.key === type);
         if (f) f.count += 1;
     });
@@ -172,7 +171,7 @@ function renderModelFilters() {
 function getFilteredModels() {
     const models = appData.aiPredictions?.models || [];
     if (currentModelFilter === 'all') return models;
-    return models.filter(m => (m.model_type || 'llm') === currentModelFilter);
+    return models.filter(m => (m.model_type || 'statistical') === currentModelFilter);
 }
 
 // 渲染模型网格
