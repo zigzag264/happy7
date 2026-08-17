@@ -43,7 +43,7 @@ MODELS = [
         "temperature": 0.7,
         "max_retries": 2,
         "max_completion_tokens": 4000,
-        "json_mode": True,
+        "json_mode": False,  # 推理模型不支持 response_format json_object
     },
     {
         "id": "deepseek-v4-flash",
