@@ -24,5 +24,5 @@ echo 💡 提示: 按 Ctrl+C 停止服务器
 echo ==========================================
 echo.
 
-REM 启动 Python HTTP 服务器
-python -m http.server 8000
+REM 启动本地服务器（静态文件 + /api/update 手动更新接口）
+python server.py 8000

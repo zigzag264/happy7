@@ -29,5 +29,5 @@ echo "💡 提示: 按 Ctrl+C 停止服务器"
 echo "=========================================="
 echo ""
 
-# 启动 Python HTTP 服务器
-python3 -m http.server 8000
+# 启动本地服务器（静态文件 + /api/update 手动更新接口）
+python3 server.py 8000

@@ -46,7 +46,12 @@ def load_data():
 
 
 def validate_data(data):
-    """校验数据完整性。返回 (errors, warnings)"""
+    """校验数据完整性。返回 (errors, warnings)
+
+    errors 阻断推送（由调用方决定退出），warnings 仅提示。
+    其中"预测目标期必须是下一期未开奖"为硬校验：
+      已开奖 / 期号异常 / 与系统计算的下一期不一致 → errors，拒绝推送。
+    """
     errors, warnings = [], []
     lh = data.get("lottery_history")
     if lh is None:
@@ -63,6 +68,31 @@ def validate_data(data):
         warnings.append("命中历史文件加载失败，命中栏将显示为空")
     elif not hist.get("predictions_history"):
         warnings.append("暂无命中历史记录")
+
+    # ---- 硬校验：推送的预测必须是"下一期未开奖"的数据 ----
+    if lh is not None and pred is not None:
+        latest_list = lh.get("data") or []
+        latest_period = str((latest_list[0].get("period", "") if latest_list else "") or "")
+        next_period = str(((lh.get("next_draw") or {}).get("next_period", "")) or "")
+        target = str(pred.get("target_period", "") or "")
+
+        if not target:
+            errors.append("AI 预测缺少目标期号（target_period），无法确认其为下一期未开奖，拒绝推送")
+        elif not (target.isdigit() and latest_period.isdigit() and next_period.isdigit()):
+            errors.append(
+                f"期号格式异常，拒绝推送（预测目标期={target or '空'}, 最新开奖期={latest_period or '空'}, 系统下一期={next_period or '空'}）"
+            )
+        elif int(target) <= int(latest_period):
+            errors.append(
+                f"预测目标为第 {target} 期，该期已开奖（最新开奖第 {latest_period} 期），"
+                f"推送的预测已过期，拒绝推送"
+            )
+        elif int(target) != int(next_period):
+            # 未开奖但期号与系统计算的下一期不一致（数据不同步/竞态）
+            errors.append(
+                f"预测目标为第 {target} 期，与系统计算的下一期未开奖（第 {next_period} 期）不一致，拒绝推送"
+            )
+        # else: target == next_period，正是下一期未开奖 ✅
     return errors, warnings
 
 
@@ -111,8 +141,10 @@ def _build_predictions_html(pred, latest_period="", next_period=""):
         return '<p style="color:#94a3b8;font-size:13px">(暂无预测数据)</p>'
 
     target = pred.get("target_period", "")
-    # 检测预测是否已过期（目标期号 ≤ 最新开奖期号）
-    stale = bool(target and latest_period) and int(target) <= int(latest_period)
+    # 检测预测是否已过期（目标期号 ≤ 最新开奖期号；isdigit 防越权路径 int() 崩溃）
+    stale = (bool(target) and bool(latest_period)
+             and str(target).isdigit() and str(latest_period).isdigit()
+             and int(str(target)) <= int(str(latest_period)))
     if stale:
         warn = f'''
         <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#92400e">

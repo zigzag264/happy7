@@ -1937,3 +1937,90 @@ body::before {
 .token-table thead th:first-child {
     text-align: left;
 }
+
+/* ==================== Manual Update Bar ==================== */
+.update-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    background: linear-gradient(135deg, var(--bg), var(--blue-50));
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 0.85rem 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.update-bar-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.update-bar-label {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--blue-600);
+    background: var(--blue-50);
+    border: 1px solid var(--blue-200);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+}
+
+#updateStatusText {
+    font-size: 0.875rem;
+    color: var(--fg-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.update-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: linear-gradient(135deg, var(--blue-600), var(--blue-500));
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.6rem 1.15rem;
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.update-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.update-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.update-btn:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.update-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.update-btn.loading {
+    animation: update-btn-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes update-btn-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}

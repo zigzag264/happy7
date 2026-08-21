@@ -37,6 +37,13 @@ def build_html():
     data = load_data()
     errors, warnings = validate_data(data)
 
+    # 硬校验失败（含"预测非下一期未开奖"）→ 阻断发送，与每日汇总保持一致
+    if errors:
+        print("\n❌ 数据校验失败，跳过 push 通知发送：")
+        for e in errors:
+            print(f"  ❌ {e}")
+        sys.exit(1)
+
     commit_info = {
         "author": author,
         "message": commit_msg,

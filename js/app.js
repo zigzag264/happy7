@@ -232,98 +232,7 @@ function createDrawnStatusBanner(actualResult) {
 
 // 渲染历史标签页
 function renderHistoryTab() {
-    renderHitRankings();
-    renderGroupedRankings();
-    renderTokenUsage();
     renderAccuracyCards();
-}
-
-// 渲染模型 Token 用量排行表
-function renderTokenUsage() {
-    const container = document.getElementById('tokenUsageContainer');
-    if (!container) return;
-
-    const records = (appData.tokenUsage && appData.tokenUsage.records) || [];
-    if (!records.length) {
-        container.innerHTML = '<div class="ranking-empty"><p>暂无 Token 用量数据</p></div>';
-        return;
-    }
-
-    // 兼容旧格式：旧记录含 model_id 且无 period 字段，视为单条调用记录
-    const isLegacy = records[0] && !('period' in records[0]) && 'model_id' in records[0];
-
-    // 按模型聚合（新结构：records 按期聚合，每期含 models 对象）
-    const stats = {};
-    const addModel = (modelId, m, retries) => {
-        const entry = stats[modelId] || {
-            modelName: m.name || m.model_name || modelId,
-            modelId: modelId,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            elapsed: 0,
-            calls: 0,
-            periods: 0,
-        };
-        entry.promptTokens += m.prompt || m.prompt_tokens || 0;
-        entry.completionTokens += m.completion || m.completion_tokens || 0;
-        entry.totalTokens += m.total || m.total_tokens || 0;
-        entry.elapsed += m.elapsed || m.elapsed_seconds || 0;
-        entry.calls += retries || 1;
-        entry.periods += 1;
-        stats[modelId] = entry;
-    };
-
-    if (isLegacy) {
-        records.forEach(r => addModel(r.model_id || r.model_name, r, 1));
-    } else {
-        records.forEach(period => {
-            const models = period.models || {};
-            Object.entries(models).forEach(([modelId, m]) => addModel(modelId, m, m.retries || 1));
-        });
-    }
-
-    const arr = Object.values(stats).sort((a, b) => b.totalTokens - a.totalTokens);
-
-    const fmt = (n) => n.toLocaleString('zh-CN');
-
-    let rows = arr.map(m => `
-        <tr>
-            <td class="token-model">${m.modelName}</td>
-            <td>${fmt(m.promptTokens)}</td>
-            <td>${fmt(m.completionTokens)}</td>
-            <td class="token-total">${fmt(m.totalTokens)}</td>
-            <td>${m.elapsed.toFixed(1)}s</td>
-            <td>${m.calls}</td>
-            <td>${fmt(Math.round(m.totalTokens / m.periods))}</td>
-        </tr>
-    `).join('');
-
-    const totalElapsed = arr.reduce((s, m) => s + m.elapsed, 0);
-
-    container.innerHTML = `
-        <div class="ranking-panel">
-            <div class="ranking-header">
-                <span class="ranking-title">Token 用量排行</span>
-                <span class="ranking-sub">${records.length} 期数据 · 总耗时 ${totalElapsed.toFixed(1)}s</span>
-            </div>
-            <div class="token-table-wrap">
-                <table class="ranking-table token-table">
-                    <thead>
-                        <tr>
-                            <th>模型</th>
-                            <th>总Prompt输入</th>
-                            <th>总输出</th>
-                            <th>总计</th>
-                            <th>总耗时</th>
-                            <th>调用次数</th>
-                            <th>期均token</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            </div>
-        </div>`;
 }
 
 // 命中排行：按时间窗口分组、按 模型+策略 命中优劣 取 Top5
@@ -488,106 +397,6 @@ function buildRankingPanel(title, sub, records, dateFilter) {
     return panel;
 }
 
-// 策略 / 模型 分组统计（新增，不替换原有排行）
-function renderGroupedRankings() {
-    const container = document.getElementById('groupedRankingContainer');
-    if (!container || !appData.predictionsHistory) return;
-    container.innerHTML = '';
-
-    const records = appData.predictionsHistory.predictions_history || [];
-    if (!records.length) {
-        container.innerHTML = '<div class="ranking-empty"><p>暂无命中回溯数据</p></div>';
-        return;
-    }
-
-    // 收集所有 模型+策略 的命中汇总
-    const stats = {};   // key = 分组键
-    records.forEach(rec => {
-        (rec.models || []).forEach(model => {
-            (model.predictions || []).forEach(pred => {
-                const hr = pred.hit_result;
-                if (!hr) return;
-                const modelKey = model.model_name || '—';
-                const stratKey = pred.strategy || '—';
-                [[modelKey, 'model'], [stratKey, 'strategy']].forEach(([name, type]) => {
-                    const key = type + '|' + name;
-                    const entry = stats[key] || {
-                        type: type,
-                        name: name,
-                        maxHits: 0,
-                        frontTotal: 0,
-                        backHits: 0,
-                        totalHits: 0,
-                        games: 0,
-                    };
-                    entry.frontTotal += hr.front_hit_count || 0;
-                    entry.backHits += hr.back_hit_count || 0;
-                    entry.totalHits += hr.total_hits || 0;
-                    entry.games += 1;
-                    if ((hr.total_hits || 0) > entry.maxHits) entry.maxHits = hr.total_hits || 0;
-                    stats[key] = entry;
-                });
-            });
-        });
-    });
-
-    // 按 总球数 降序排序
-    const arr = Object.values(stats).sort((a, b) => b.totalHits - a.totalHits || b.backHits - a.backHits);
-
-    const modelPanel = buildGroupedPanel('模型分组', '按 AI 模型统计命中（全部历史）', arr.filter(e => e.type === 'model'));
-
-    if (modelPanel) container.appendChild(modelPanel);
-}
-
-// 构建分组统计面板
-function buildGroupedPanel(title, sub, entries) {
-    const panel = document.createElement('div');
-    panel.className = 'ranking-panel';
-
-    const header = document.createElement('div');
-    header.className = 'ranking-header';
-    header.innerHTML = '<span class="ranking-title">' + title + '</span>'
-        + '<span class="ranking-sub">' + sub + '</span>';
-    panel.appendChild(header);
-
-    if (!entries.length) {
-        const empty = document.createElement('div');
-        empty.className = 'ranking-empty';
-        empty.innerHTML = '<p>暂无命中数据</p>';
-        panel.appendChild(empty);
-        return panel;
-    }
-
-    const table = document.createElement('table');
-    table.className = 'ranking-table';
-    const thead = document.createElement('thead');
-    thead.innerHTML = '<tr>'
-        + '<th>#</th><th>名称</th>'
-        + '<th>历史最大单期球数</th><th>历史总前区</th><th>历史总后区</th><th>总球数</th>'
-        + '<th>期数</th></tr>';
-    table.appendChild(thead);
-
-    const tbody = document.createElement('tbody');
-    entries.forEach((e, i) => {
-        const tr = document.createElement('tr');
-        const rankClass = i === 0 ? ' rank-1' : i === 1 ? ' rank-2' : i === 2 ? ' rank-3' : '';
-        const bestTag = e.maxHits >= 5 ? 'excellent' : e.maxHits >= 3 ? 'good' : '';
-        tr.innerHTML =
-            '<td class="rank-num' + rankClass + '">' + (i + 1) + '</td>' +
-            '<td class="rank-model">' + escHtml(e.name) + '</td>' +
-            '<td class="rank-best ' + bestTag + '">' + e.maxHits + ' 球</td>' +
-            '<td class="rank-total">' + e.frontTotal + ' 球</td>' +
-            '<td class="rank-blue">' + e.backHits + ' 球</td>' +
-            '<td class="rank-total">' + e.totalHits + ' 球</td>' +
-            '<td class="rank-games">' + e.games + ' 期</td>';
-        tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    panel.appendChild(table);
-
-    return panel;
-}
-
 // HTML 转义
 function escHtml(s) {
     const d = document.createElement('div');
@@ -737,7 +546,77 @@ function setupEventListeners() {
         item.addEventListener('click', () => handleTabSwitch(item.dataset.tab, mobileNavItems));
     });
 
+    // 手动更新按钮
+    setupManualUpdate();
     }
+
+// 手动更新：抓取最新开奖数据 + 重新生成下一期模型预测
+function setupManualUpdate() {
+    const btn = document.getElementById('manualUpdateBtn');
+    const statusEl = document.getElementById('updateStatusText');
+    if (!btn || !statusEl) return;
+
+    const idleHtml = btn.innerHTML;
+    btn.addEventListener('click', async () => {
+        if (btn.disabled) return;
+        let failed = false;
+        btn.disabled = true;
+        btn.classList.add('loading');
+        btn.innerHTML = '⏳ 更新中...';
+        statusEl.textContent = '正在抓取开奖数据并重新生成预测，请稍候...';
+
+        try {
+            const res = await fetch('/api/update', { method: 'POST' });
+
+            if (res.status === 404) {
+                statusEl.textContent = '❌ 此功能需通过 python server.py 启动本地服务（当前为纯静态环境）';
+                failed = true;
+            } else if (!res.ok) {
+                let msg = '请求失败 (HTTP ' + res.status + ')';
+                try { const j = await res.json(); if (j.error) msg = j.error; } catch (e) {/* ignore */}
+                statusEl.textContent = '❌ ' + msg;
+                failed = true;
+            } else {
+                const result = await res.json();
+                if (!result.ok) {
+                    const failedSteps = (result.steps || []).filter(s => !s.ok);
+                    const detail = failedSteps.map(s => s.name + ': ' + String(s.output || '').slice(0, 150)).join(' | ');
+                    statusEl.textContent = '❌ 更新异常：' + (detail || '未知错误');
+                    showErrorInPage('更新异常：' + (detail || '请查看服务器日志'));
+                    failed = true;
+                } else {
+                    statusEl.textContent = '✅ 更新成功，正在刷新页面数据...';
+                    await loadAllData();
+                    renderHeroBanner();
+                    renderModelFilters();
+                    renderModelsGrid();
+                    renderHistoryTab();
+                    const activeTabEl = document.querySelector('.tab-content.active');
+                    const activeTab = activeTabEl ? activeTabEl.dataset.tab : null;
+                    if (activeTab === 'ranking') renderHitRankings();
+                    if (activeTab === 'analysis') {
+                        renderStatisticsCards();
+                        renderHistoryTable();
+                        renderAccuracyCards();
+                    }
+                    const summ = result.summary || {};
+                    statusEl.textContent = '✅ 已更新 · 最新期 ' + (summ.latest_period || '-')
+                        + ' · 待开 ' + (summ.next_period || '-')
+                        + ' · 模型 ' + (summ.model_count || '-') + ' 个 · ' + (result.updated_at || '');
+                }
+            }
+        } catch (e) {
+            console.error('手动更新失败:', e);
+            statusEl.textContent = '❌ 更新失败：' + (e.message || '网络错误');
+            failed = true;
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = idleHtml;
+            if (failed && !statusEl.textContent) statusEl.textContent = '❌ 更新失败';
+        }
+    });
+}
 
 // 处理Tab切换
 function handleTabSwitch(tabName, navItems) {

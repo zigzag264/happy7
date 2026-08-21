@@ -23,6 +23,10 @@ __pycache__/
 *_backup_*.json
 fetch_history/lottery_data_backup_*.json
 
+# 抓取原始数据（cwd 分别在根目录 / fetch_history 时生成，均非网页数据源）
+lottery_data.json
+fetch_history/lottery_data.json
+
 # OS
 .DS_Store
 Thumbs.db

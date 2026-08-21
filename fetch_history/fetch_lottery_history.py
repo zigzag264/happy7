@@ -301,9 +301,14 @@ class LotteryDataFetcher:
                 print(f"\n数据已成功保存到 {filename}")
                 print(f"共保存 {len(merged_data)} 期数据")
 
-                # 同时更新到 ../data/lottery_history.json
+                # 同时更新到 ../data/lottery_history.json（基于脚本所在目录，保证任意 cwd 下可运行）
                 try:
-                    web_data_path = os.path.join(os.path.dirname(filename), '..', 'data', 'lottery_history.json')
+                    web_data_path = os.path.normpath(
+                        os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)),
+                            '..', 'data', 'lottery_history.json'
+                        )
+                    )
                     formatted_data = self.format_for_web(merged_data)
 
                     with open(web_data_path, 'w', encoding='utf-8') as f:
