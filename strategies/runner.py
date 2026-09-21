@@ -22,6 +22,7 @@ if SCRIPT_DIR not in sys.path:
 
 from strategies import get_all_strategies
 from strategies.base import load_history, get_next_draw_info, get_recent_draws
+from strategies.archive import archive_prediction_if_drawn
 
 AI_PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, "data", "ai_predictions.json")
 
@@ -175,6 +176,10 @@ def main():
     if not target_period:
         print("❌ 无法获取下期期号信息")
         return
+
+    # 归档：当前保存的预测若目标期已开奖，先比对命中并写入 predictions_history.json
+    print("\n🗂️  检查上一期预测归档...")
+    archive_prediction_if_drawn()
 
     models_to_run = None
     if args.models:
