@@ -2,11 +2,9 @@ name: Email Daily Digest
 
 on:
   schedule:
-    # 每天 UTC 00:30 = 北京时间 08:30
-    # 在 AI 预测生成 (UTC 00:00 / 北京 08:00) 之后运行，确保邮件含最新预测
-    - cron: '30 0 * * *'
-    # 每天 UTC 10:00 = 北京时间 18:00（下午推送）
-    - cron: '0 10 * * *'
+    # 每天 UTC 04:30 = 北京时间 12:30
+    # 此时前一晚生成的 AI 预测已提交入库，邮件包含最新预测
+    - cron: '30 4 * * *'
   workflow_dispatch:
 
 jobs:
