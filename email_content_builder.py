@@ -612,7 +612,7 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
       <div style="background:#f8fafc;padding:12px 18px;text-align:center;border-top:1px solid #e2e8f0;border-radius:0 0 12px 12px">
         <p style="font-size:10px;color:#94a3b8;margin:0;line-height:1.6">
           {footer_text}<br>
-          <a href="https://github.com/zhens/double-color-ball" style="color:#3b82f6;text-decoration:none">super-lotto</a>
+          <a href="https://github.com/zigzag264/happy7" style="color:#3b82f6;text-decoration:none">happy7</a>
         </p>
       </div>
     </div>'''
