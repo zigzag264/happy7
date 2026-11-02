@@ -391,8 +391,8 @@ def _build_model_group_html(hist, limit=8):
     </table>'''
 
 
-def _build_recommendations_html(pred, hist, latest_period="", next_period=""):
-    """本期推荐 — 从当前预测中挑选历史累计命中最高的策略组合"""
+def _build_recommendations_html(pred, hist, latest_period="", next_period="", limit=10):
+    """本期推荐 — 按历史累计命中挑选 Top N 个「模型+策略」组合"""
     if not pred or not pred.get("models"):
         return '<p style="color:#94a3b8;font-size:13px">(暂无预测数据)</p>'
 
@@ -403,34 +403,40 @@ def _build_recommendations_html(pred, hist, latest_period="", next_period=""):
             current[(m.get("model_id"), g.get("strategy"))] = (m, g)
 
     picks = []
-    seen = set()
+    used_keys = set()
+    seen_numbers = set()
 
     def add_pick(model, group, entry=None):
+        key = (model.get("model_id"), group.get("strategy"))
         signature = (
             tuple(group.get("front_balls", [])),
             tuple(group.get("back_balls", [])),
         )
-        if signature in seen:
+        # 同一模型+策略不重复；号码完全相同的组合自动顺延到下一名
+        if key in used_keys or signature in seen_numbers:
             return False
-        seen.add(signature)
+        used_keys.add(key)
+        seen_numbers.add(signature)
         picks.append((model, group, entry))
         return True
 
-    # 优先使用历史累计命中最高的策略
+    # 优先使用历史累计命中最高的模型+策略
     for entry in rank_strategies(records):
         item = current.get((entry["model_id"], entry["strategy"]))
         if not item:
             continue
-        if add_pick(item[0], item[1], entry) and len(picks) >= 3:
+        add_pick(item[0], item[1], entry)
+        if len(picks) >= limit:
             break
 
     # 历史数据不足时用当前预测补齐
-    if len(picks) < 3:
+    if len(picks) < limit:
         for m in pred["models"]:
             for g in m.get("predictions", []):
-                if add_pick(m, g) and len(picks) >= 3:
+                add_pick(m, g)
+                if len(picks) >= limit:
                     break
-            if len(picks) >= 3:
+            if len(picks) >= limit:
                 break
 
     if not picks:
@@ -460,7 +466,7 @@ def _build_recommendations_html(pred, hist, latest_period="", next_period=""):
         period_line = (
             f'<div style="font-size:12px;color:#64748b;margin-bottom:10px">'
             f'基于第 {latest_period or "—"} 期开奖 · 目标第 {next_period or "—"} 期 · '
-            f'按历史累计命中排序</div>'
+            f'按历史累计命中排序 · Top {limit}（同号去重）</div>'
         )
 
     return period_line + cards
@@ -533,8 +539,8 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         {commit_html}
         {_SECTION.format("🏆 最新开奖")}
         {_build_latest_draw_html(latest, nd)}
-        {_SECTION.format("🔮 本期推荐")}
-        {_build_recommendations_html(pred, hist, latest_period, next_period)}
+        {_SECTION.format("🔮 本期推荐 Top 10")}
+        {_build_recommendations_html(pred, hist, latest_period, next_period, limit=10)}
         {_SECTION.format("📊 命中排行 Top 8")}
         {_build_ranking_html(hist, limit=8)}
         {_SECTION.format("📈 模型分组统计 Top 8")}
