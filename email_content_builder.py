@@ -104,38 +104,38 @@ def validate_data(data):
 
 # ==================== 共用 HTML 构建 ====================
 
-_SECTION = '<h2 style="font-size:16px;color:#1e293b;border-left:4px solid #3b82f6;padding-left:12px;margin:24px 0 12px">{}</h2>'
+_SECTION = '<h2 style="font-size:14px;color:#0f172a;font-weight:700;border-left:3px solid #3b82f6;padding-left:10px;margin:18px 0 10px;letter-spacing:0.2px">{}</h2>'
 
 
 def _ball(num, color):
     # 前区用红色，后区用蓝色（视觉区分）
     bg = "#ef4444" if color == "front" else "#3b82f6"
-    return f'<span style="display:inline-block;width:28px;height:28px;line-height:28px;text-align:center;border-radius:50%;background:{bg};color:#fff;font-size:13px;font-weight:700;margin:0 2px">{num}</span>'
+    return f'<span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:50%;background:{bg};color:#fff;font-size:11px;font-weight:700;margin:0 1.5px">{num}</span>'
 
 
 def _build_latest_draw_html(latest, nd):
     """最新开奖 + 下期预告 HTML（大乐透 5+2）"""
     if not latest:
-        return '<p style="color:#94a3b8;font-size:13px">(暂无数据)</p>'
+        return '<p style="color:#94a3b8;font-size:11px">(暂无数据)</p>'
     fronts = "".join(_ball(b, "front") for b in latest.get("front_balls", []))
     backs = "".join(_ball(b, "back") for b in latest.get("back_balls", []))
     html = f'''
-    <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">
-      <tr><td style="padding:12px 16px">
-        <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:8px">
+    <table style="width:100%;border-collapse:collapse;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <tr><td style="padding:10px 14px">
+        <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:6px">
           第{latest.get("period","")}期 · {latest.get("date","")}
         </div>
-        <div style="margin-bottom:6px">{fronts}</div>
-        <div style="margin-top:4px">{backs}</div>
+        <div style="margin-bottom:4px">{fronts}</div>
+        <div style="margin-top:2px">{backs}</div>
       </td></tr>
     </table>'''
     if nd:
         html += f'''
-    <table style="width:100%;border-collapse:collapse;background:#eff6ff;border-radius:8px;overflow:hidden;margin-top:8px">
-      <tr><td style="padding:10px 16px">
-        <span style="font-size:13px;color:#64748b">下期预告</span>
-        <span style="font-size:15px;font-weight:700;color:#1e293b;margin-left:8px">{nd.get("next_period","")}</span>
-        <span style="font-size:13px;color:#475569;margin-left:8px">{nd.get("next_date_display","")} {nd.get("weekday","")} {nd.get("draw_time","21:25")}</span>
+    <table style="width:100%;border-collapse:collapse;background:#f0f9ff;border:1px solid #e0f2fe;border-radius:10px;overflow:hidden;margin-top:6px">
+      <tr><td style="padding:8px 14px">
+        <span style="font-size:11px;color:#64748b">下期预告</span>
+        <span style="font-size:13px;font-weight:700;color:#0f172a;margin-left:6px">{nd.get("next_period","")}</span>
+        <span style="font-size:11px;color:#475569;margin-left:6px">{nd.get("next_date_display","")} {nd.get("weekday","")} {nd.get("draw_time","21:25")}</span>
       </td></tr>
     </table>'''
     return html
@@ -144,7 +144,7 @@ def _build_latest_draw_html(latest, nd):
 def _build_predictions_html(pred, latest_period="", next_period=""):
     """AI 全部预测 HTML（含过期检测）"""
     if not pred or not pred.get("models"):
-        return '<p style="color:#94a3b8;font-size:13px">(暂无预测数据)</p>'
+        return '<p style="color:#94a3b8;font-size:11px">(暂无预测数据)</p>'
 
     target = pred.get("target_period", "")
     # 检测预测是否已过期（目标期号 ≤ 最新开奖期号；isdigit 防越权路径 int() 崩溃）
@@ -153,43 +153,40 @@ def _build_predictions_html(pred, latest_period="", next_period=""):
              and int(str(target)) <= int(str(latest_period)))
     if stale:
         warn = f'''
-        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#92400e">
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:11px;color:#92400e;line-height:1.5">
           ⚠️ 当前 AI 预测目标为<b>第{target}期</b>，该期已开奖（最新开奖为第{latest_period}期），预测已过期。<br>
           下一期未开奖：<b>第{next_period}期</b>，待 AI 预测更新后将自动显示。
         </div>'''
     else:
         warn = ""
 
-    cards = ""
+    cell = "padding:4px 8px;font-size:11px;line-height:1.5;"
+    tables = ""
     for m in pred["models"]:
-        groups = ""
-        for g in m.get("predictions", []):
+        rows = ""
+        for i, g in enumerate(m.get("predictions", []), 1):
             fronts = "".join(_ball(b, "front") for b in g.get("front_balls", []))
             backs = "".join(_ball(b, "back") for b in g.get("back_balls", []))
-            desc = g.get("description", "")
-            desc_html = f'<div style="font-size:11px;color:#94a3b8;margin-top:4px">{desc}</div>' if desc else ""
-            groups += f'''
-            <div style="padding:8px 12px;border-bottom:1px solid #f1f5f9">
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span style="font-size:11px;font-weight:700;color:#3b82f6;background:#eff6ff;padding:2px 8px;border-radius:4px">G{g["group_id"]}</span>
-                <span style="font-size:13px;font-weight:600;color:#1e293b">{g["strategy"]}</span>
-              </div>
-              <div style="margin-top:6px;display:flex;align-items:center;flex-wrap:wrap;gap:2px">{fronts}<span style="color:#94a3b8;margin:0 4px">|</span>{backs}</div>
-              {desc_html}
-            </div>'''
-        cards += f'''
-        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:12px">
-          <div style="background:linear-gradient(135deg,#1e293b,#334155);padding:10px 14px">
-            <span style="font-size:14px;font-weight:700;color:#fff">{m["model_name"]}</span>
-          </div>
-          {groups}
-        </div>'''
+            bg = "#f8fafc" if i % 2 == 1 else "#ffffff"
+            rows += f'''
+            <tr style="background:{bg}">
+              <td style="{cell}width:34px;text-align:center;color:#3b82f6;font-weight:700;font-size:10px">G{g.get("group_id", i)}</td>
+              <td style="{cell}font-weight:600;color:#0f172a;white-space:nowrap">{g.get("strategy", "—")}</td>
+              <td style="{cell}white-space:nowrap">{fronts}<span style="color:#94a3b8;margin:0 3px">|</span>{backs}</td>
+            </tr>'''
+        tables += f'''
+        <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:8px">
+          <thead><tr style="background:#eff6ff">
+            <th colspan="3" style="padding:7px 10px;text-align:left;font-size:12px;color:#1e40af;font-weight:700">{m["model_name"]}</th>
+          </tr></thead>
+          <tbody>{rows}</tbody>
+        </table>'''
     return f'''
     {warn}
-    <div style="font-size:13px;color:#64748b;margin-bottom:12px">
+    <div style="font-size:11px;color:#64748b;margin-bottom:8px">
       目标期号: {pred.get("target_period","")} · 预测日期: {pred.get("prediction_date","")} · 模型数: {len(pred["models"])}
     </div>
-    {cards}'''
+    {tables}'''
 
 
 def _medal(index):
@@ -197,7 +194,7 @@ def _medal(index):
 
 
 def _row_bg(index):
-    return "#fefce8" if index == 0 else "#f8fafc" if index % 2 == 0 else "#ffffff"
+    return "#fffbeb" if index == 0 else "#f8fafc" if index % 2 == 0 else "#ffffff"
 
 
 def _collect_ranking_stats(records):
@@ -242,15 +239,67 @@ def _collect_ranking_stats(records):
     return stats
 
 
+def _build_ball_hit_html(records):
+    """单球命中 — 最新一期 7 个开奖号码分别被哪些模型命中"""
+    if not records:
+        return ""
+    latest = records[0]
+    actual = latest.get("actual_result") or {}
+    fronts = actual.get("front_balls", [])
+    backs = actual.get("back_balls", [])
+    if not fronts and not backs:
+        return ""
+
+    entries = [("front", b) for b in fronts] + [("back", b) for b in backs]
+    hits = {(zone, ball): [] for zone, ball in entries}
+    for m in latest.get("models", []):
+        name = m.get("model_name", "—")
+        for pred in m.get("predictions", []):
+            hr = pred.get("hit_result") or {}
+            for ball in hr.get("front_hits", []):
+                key = ("front", ball)
+                if key in hits and name not in hits[key]:
+                    hits[key].append(name)
+            for ball in hr.get("back_hits", []):
+                key = ("back", ball)
+                if key in hits and name not in hits[key]:
+                    hits[key].append(name)
+
+    cell = "padding:4px 6px;font-size:11px;line-height:1.5;"
+    rows = ""
+    for i, (zone, ball) in enumerate(entries):
+        bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
+        models = "、".join(hits[(zone, ball)])
+        rows += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center">{_ball(ball, zone)}</td>
+          <td style="{cell}text-align:center;color:#64748b">{'前区' if zone == 'front' else '后区'}</td>
+          <td style="{cell}color:#0f172a;font-weight:600">{models}</td>
+        </tr>'''
+
+    return f'''
+    <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 6px">🎯 单球命中（第 {actual.get("period", "—")} 期）</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:12px">
+      <thead><tr style="background:#f8fafc">
+        <th style="padding:4px 6px;text-align:center;color:#64748b;font-size:10px;font-weight:600">号码</th>
+        <th style="padding:4px 6px;text-align:center;color:#64748b;font-size:10px;font-weight:600">区域</th>
+        <th style="padding:4px 6px;text-align:left;color:#64748b;font-size:10px;font-weight:600">命中模型（空白表示 0 命中）</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>'''
+
+
 def _build_ranking_html(hist, limit=8):
     """命中排行 HTML — 最新一期 + 历史累计（各 Top N）"""
     records = hist.get("predictions_history", []) if hist else []
     if not records:
-        return '<p style="color:#94a3b8;font-size:13px;padding:12px">(暂无命中记录)</p>'
+        return '<p style="color:#94a3b8;font-size:11px;padding:10px">(暂无命中记录)</p>'
 
     stats = _collect_ranking_stats(records)
-    cell = "padding:5px 6px;font-size:11px;"
-    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;"
+    cell = "padding:4px 6px;font-size:11px;line-height:1.5;"
+    head = "padding:4px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
+    dense_cell = "padding:4px 4px;font-size:10px;line-height:1.5;"
+    dense_head = "padding:4px 4px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
 
     # === 最新一期：按 后区命中 → 本期命中数 排序 ===
     latest_arr = [s for s in stats.values() if s["current"] > 0]
@@ -264,16 +313,16 @@ def _build_ranking_html(hist, limit=8):
         rows1 += f'''
         <tr style="background:{bg}">
           <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
-          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
+          <td style="{cell}font-weight:600;color:#0f172a">{r["model"]}</td>
           <td style="{cell}color:#475569">{r["strategy"]}</td>
           <td style="{cell}text-align:center;font-weight:700;color:#ef4444">{r["current"]}球</td>
           <td style="{cell}color:#2563eb;font-family:monospace">{r["frontHits"]}</td>
           <td style="{cell}text-align:center;font-weight:700;color:#3b82f6">{back_mark}</td>
         </tr>'''
     table1 = f'''
-    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">🏆 最新一期 Top {limit}</div>
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:16px">
-      <thead><tr style="background:#f1f5f9">
+    <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 6px">🏆 最新一期 Top {limit}</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:12px">
+      <thead><tr style="background:#f8fafc">
         <th style="{head}text-align:center">#</th>
         <th style="{head}text-align:left">模型</th>
         <th style="{head}text-align:left">策略</th>
@@ -293,41 +342,41 @@ def _build_ranking_html(hist, limit=8):
         bg = _row_bg(i)
         rows2 += f'''
         <tr style="background:{bg}">
-          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
-          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
-          <td style="{cell}color:#475569">{r["strategy"]}</td>
-          <td style="{cell}text-align:center;color:#475569">{r["best"]}球</td>
-          <td style="{cell}text-align:center;color:#475569">{r["totalFront"]}球</td>
-          <td style="{cell}text-align:center;color:#3b82f6;font-weight:600">{r["totalBack"]}球</td>
-          <td style="{cell}text-align:center;color:#475569">{r["currentFront"]}球</td>
-          <td style="{cell}text-align:center;color:#ef4444;font-weight:600">{r["maxFront"]}球</td>
-          <td style="{cell}text-align:center;color:#475569">{r["games"]}期</td>
+          <td style="{dense_cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{dense_cell}font-weight:600;color:#0f172a">{r["model"]}</td>
+          <td style="{dense_cell}color:#475569">{r["strategy"]}</td>
+          <td style="{dense_cell}text-align:center;color:#475569">{r["best"]}球</td>
+          <td style="{dense_cell}text-align:center;color:#475569">{r["totalFront"]}球</td>
+          <td style="{dense_cell}text-align:center;color:#3b82f6;font-weight:600">{r["totalBack"]}球</td>
+          <td style="{dense_cell}text-align:center;color:#475569">{r["currentFront"]}球</td>
+          <td style="{dense_cell}text-align:center;color:#ef4444;font-weight:600">{r["maxFront"]}球</td>
+          <td style="{dense_cell}text-align:center;color:#475569">{r["games"]}期</td>
         </tr>'''
     table2 = f'''
-    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">📈 历史累计排行 Top {limit}</div>
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-      <thead><tr style="background:#f1f5f9">
-        <th style="{head}text-align:center">#</th>
-        <th style="{head}text-align:left">模型</th>
-        <th style="{head}text-align:left">策略</th>
-        <th style="{head}text-align:center">历史最多</th>
-        <th style="{head}text-align:center">累计前区</th>
-        <th style="{head}text-align:center">累计后区</th>
-        <th style="{head}text-align:center">本期前区</th>
-        <th style="{head}text-align:center">单期最多前区</th>
-        <th style="{head}text-align:center">期数</th>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;margin:10px 0 6px">📈 历史累计排行 Top {limit}</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
+        <th style="{dense_head}text-align:center">#</th>
+        <th style="{dense_head}text-align:left">模型</th>
+        <th style="{dense_head}text-align:left">策略</th>
+        <th style="{dense_head}text-align:center">历史最多</th>
+        <th style="{dense_head}text-align:center">累计前区</th>
+        <th style="{dense_head}text-align:center">累计后区</th>
+        <th style="{dense_head}text-align:center">本期前区</th>
+        <th style="{dense_head}text-align:center">单期最多前区</th>
+        <th style="{dense_head}text-align:center">期数</th>
       </tr></thead>
       <tbody>{rows2}</tbody>
     </table>'''
 
-    return table1 + table2
+    return table1 + _build_ball_hit_html(records) + table2
 
 
 def _build_model_group_html(hist, limit=8):
     """模型分组统计 — 每个模型的 3 种策略合并后按累计命中排序 Top N"""
     records = hist.get("predictions_history", []) if hist else []
     if not records:
-        return '<p style="color:#94a3b8;font-size:13px;padding:12px">(暂无命中记录)</p>'
+        return '<p style="color:#94a3b8;font-size:11px;padding:10px">(暂无命中记录)</p>'
 
     latest_record = records[0]
     stats = {}
@@ -357,8 +406,8 @@ def _build_model_group_html(hist, limit=8):
                     s["current"] += total
 
     arr = sorted(stats.values(), key=lambda x: (x["total"], x["totalBack"]), reverse=True)[:limit]
-    cell = "padding:5px 6px;font-size:11px;"
-    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;"
+    cell = "padding:4px 6px;font-size:11px;line-height:1.5;"
+    head = "padding:4px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
 
     rows = ""
     for i, r in enumerate(arr):
@@ -366,7 +415,7 @@ def _build_model_group_html(hist, limit=8):
         rows += f'''
         <tr style="background:{bg}">
           <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
-          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
+          <td style="{cell}font-weight:600;color:#0f172a">{r["model"]}</td>
           <td style="{cell}text-align:center;color:#475569;font-weight:600">{r["total"]}球</td>
           <td style="{cell}text-align:center;color:#475569">{r["totalFront"]}球</td>
           <td style="{cell}text-align:center;color:#3b82f6">{r["totalBack"]}球</td>
@@ -376,8 +425,8 @@ def _build_model_group_html(hist, limit=8):
         </tr>'''
 
     return f'''
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-      <thead><tr style="background:#f1f5f9">
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
         <th style="{head}text-align:center">#</th>
         <th style="{head}text-align:left">模型</th>
         <th style="{head}text-align:center">累计命中</th>
@@ -394,7 +443,7 @@ def _build_model_group_html(hist, limit=8):
 def _build_recommendations_html(pred, hist, latest_period="", next_period="", limit=10):
     """本期推荐 — 按历史累计命中挑选 Top N 个「模型+策略」组合"""
     if not pred or not pred.get("models"):
-        return '<p style="color:#94a3b8;font-size:13px">(暂无预测数据)</p>'
+        return '<p style="color:#94a3b8;font-size:11px">(暂无预测数据)</p>'
 
     records = hist.get("predictions_history", []) if hist else []
     current = {}
@@ -440,36 +489,48 @@ def _build_recommendations_html(pred, hist, latest_period="", next_period="", li
                 break
 
     if not picks:
-        return '<p style="color:#94a3b8;font-size:13px">(暂无可推荐预测)</p>'
+        return '<p style="color:#94a3b8;font-size:11px">(暂无可推荐预测)</p>'
 
-    cards = ""
+    cell = "padding:4px 6px;font-size:11px;line-height:1.5;"
+    head = "padding:4px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
+    rows = ""
     for i, (model, group, entry) in enumerate(picks, 1):
         fronts = "".join(_ball(b, "front") for b in group.get("front_balls", []))
         backs = "".join(_ball(b, "back") for b in group.get("back_balls", []))
-        base = f'{model.get("model_name", "—")} · {group.get("strategy", "—")}'
         if entry:
-            basis = f'历史累计 {entry["total_hits"]} 球 / {entry["games"]} 期'
+            basis = f'{entry["total_hits"]}球 / {entry["games"]}期'
         else:
-            basis = "按当前预测顺序"
-        cards += f'''
-        <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#f8fafc">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px">
-            <span style="font-size:12px;font-weight:700;color:#3b82f6">推荐 {i}</span>
-            <span style="font-size:11px;color:#64748b">{base}</span>
-          </div>
-          <div>{fronts}<span style="color:#94a3b8;margin:0 4px">|</span>{backs}</div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:4px">{basis}</div>
-        </div>'''
+            basis = "—"
+        bg = _row_bg(i - 1)
+        rows += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i - 1)}</td>
+          <td style="{cell}font-weight:600;color:#0f172a">{model.get("model_name", "—")}</td>
+          <td style="{cell}color:#475569">{group.get("strategy", "—")}</td>
+          <td style="{cell}white-space:nowrap">{fronts}<span style="color:#94a3b8;margin:0 3px">|</span>{backs}</td>
+          <td style="{cell}text-align:center;color:#3b82f6;font-weight:600;white-space:nowrap">{basis}</td>
+        </tr>'''
+    table = f'''
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">模型</th>
+        <th style="{head}text-align:left">策略</th>
+        <th style="{head}text-align:left">推荐号码</th>
+        <th style="{head}text-align:center;white-space:nowrap">历史累计</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>'''
 
     period_line = ""
     if latest_period or next_period:
         period_line = (
-            f'<div style="font-size:12px;color:#64748b;margin-bottom:10px">'
+            f'<div style="font-size:11px;color:#64748b;margin-bottom:8px">'
             f'基于第 {latest_period or "—"} 期开奖 · 目标第 {next_period or "—"} 期 · '
             f'按历史累计命中排序 · Top {limit}（同号去重）</div>'
         )
 
-    return period_line + cards
+    return period_line + table
 
 
 def build_html_digest(data, warnings, generated_at, commit_info=None):
@@ -497,8 +558,8 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
     # 警告
     warn_html = ""
     if warnings:
-        items = "".join(f'<li style="font-size:12px;color:#d97706;padding:2px 0">⚠️ {w}</li>' for w in warnings)
-        warn_html = f'<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px"><ul style="margin:0;padding-left:20px">{items}</ul></div>'
+        items = "".join(f'<li style="font-size:11px;color:#d97706;padding:1px 0">{w}</li>' for w in warnings)
+        warn_html = f'<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 12px;margin-bottom:12px"><ul style="margin:0;padding-left:18px">{items}</ul></div>'
 
     # 提交信息（仅 push 通知）
     commit_html = ""
@@ -508,14 +569,14 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         files = commit_info.get("files", [])
         files_html = ""
         if files:
-            items = "".join(f'<li style="font-size:13px;color:#475569;padding:2px 0">{f}</li>' for f in files)
-            files_html = f'<ul style="margin:8px 0 0;padding-left:20px">{items}</ul>'
+            items = "".join(f'<li style="font-size:10px;color:#475569;padding:1px 0">{f}</li>' for f in files)
+            files_html = f'<ul style="margin:6px 0 0;padding-left:18px">{items}</ul>'
         commit_html = f'''
         {_SECTION.format("📦 提交信息")}
-        <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">
-          <tr><td style="padding:12px 16px">
-            <div style="font-size:13px;color:#475569;margin-bottom:4px"><span style="color:#94a3b8">作者</span> {author}</div>
-            <div style="font-size:14px;font-weight:600;color:#1e293b">{msg}</div>
+        <table style="width:100%;border-collapse:collapse;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+          <tr><td style="padding:10px 12px">
+            <div style="font-size:11px;color:#475569;margin-bottom:3px"><span style="color:#94a3b8">作者</span> {author}</div>
+            <div style="font-size:12px;font-weight:600;color:#0f172a">{msg}</div>
             {files_html}
           </td></tr>
         </table>'''
@@ -528,13 +589,13 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
     )
 
     html = f'''
-    <div style="max-width:600px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#ffffff;padding:0;color:#1e293b">
-      <div style="background:linear-gradient(135deg,#1e293b,#3b82f6);padding:28px 24px;text-align:center;border-radius:12px 12px 0 0">
-        <div style="font-size:28px;margin-bottom:4px">🎯</div>
-        <h1 style="color:#ffffff;font-size:20px;font-weight:800;margin:0;letter-spacing:-0.5px">大乐透 AI 预测</h1>
-        <p style="color:#93c5fd;font-size:13px;margin:4px 0 0">{subtitle} · {generated_at}</p>
+    <div style="max-width:600px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#ffffff;padding:0;color:#0f172a">
+      <div style="background:linear-gradient(135deg,#eff6ff,#e0f2fe);padding:20px 18px;text-align:center;border-bottom:1px solid #dbeafe;border-radius:12px 12px 0 0">
+        <div style="font-size:22px;margin-bottom:2px">🎯</div>
+        <h1 style="color:#0f172a;font-size:18px;font-weight:700;margin:0;letter-spacing:-0.3px">大乐透 AI 预测</h1>
+        <p style="color:#475569;font-size:11px;margin:4px 0 0">{subtitle} · {generated_at}</p>
       </div>
-      <div style="padding:20px 24px">
+      <div style="padding:16px 18px">
         {warn_html}
         {commit_html}
         {_SECTION.format("🏆 最新开奖")}
@@ -548,8 +609,8 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         {_SECTION.format("🤖 AI 全部预测")}
         {_build_predictions_html(pred, latest_period, next_period)}
       </div>
-      <div style="background:#f8fafc;padding:16px 24px;text-align:center;border-top:1px solid #e2e8f0;border-radius:0 0 12px 12px">
-        <p style="font-size:12px;color:#94a3b8;margin:0">
+      <div style="background:#f8fafc;padding:12px 18px;text-align:center;border-top:1px solid #e2e8f0;border-radius:0 0 12px 12px">
+        <p style="font-size:10px;color:#94a3b8;margin:0;line-height:1.6">
           {footer_text}<br>
           <a href="https://github.com/zhens/double-color-ball" style="color:#3b82f6;text-decoration:none">super-lotto</a>
         </p>
