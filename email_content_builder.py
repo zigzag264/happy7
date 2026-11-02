@@ -10,9 +10,15 @@
 """
 
 import os
+import sys
 import json
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from strategies.selection import rank_strategies
+
 HISTORY_FILE     = os.path.join(BASE_DIR, "data", "lottery_history.json")
 PREDICTIONS_FILE = os.path.join(BASE_DIR, "data", "ai_predictions.json")
 HIT_HISTORY_FILE = os.path.join(BASE_DIR, "data", "predictions_history.json")
@@ -186,8 +192,139 @@ def _build_predictions_html(pred, latest_period="", next_period=""):
     {cards}'''
 
 
-def _build_ranking_html(hist, limit=10):
-    """命中排行 HTML — 两段式：最新一期 + 历史累计"""
+def _medal(index):
+    return {0: "🥇", 1: "🥈", 2: "🥉"}.get(index, f"{index + 1}")
+
+
+def _row_bg(index):
+    return "#fefce8" if index == 0 else "#f8fafc" if index % 2 == 0 else "#ffffff"
+
+
+def _collect_ranking_stats(records):
+    """按 模型+策略 汇总命中，附带本期与单期最多前区数据"""
+    latest_record = records[0]
+    stats = {}
+    for rec in records:
+        is_latest = rec is latest_record
+        for m in rec.get("models", []):
+            model_name = m.get("model_name", "—")
+            for pred in m.get("predictions", []):
+                hr = pred.get("hit_result")
+                if not hr:
+                    continue
+                key = f"{model_name}|{pred.get('strategy', '—')}"
+                s = stats.get(key)
+                if s is None:
+                    s = stats[key] = {
+                        "model": model_name,
+                        "strategy": pred.get("strategy", "—"),
+                        "total": 0, "best": 0, "games": 0,
+                        "current": 0, "currentFront": 0, "backHit": 0,
+                        "frontHits": "", "totalFront": 0, "totalBack": 0,
+                        "maxFront": 0,
+                    }
+                total = hr.get("total_hits", 0)
+                front = hr.get("front_hit_count", 0)
+                back = hr.get("back_hit_count", 0)
+                s["total"] += total
+                s["games"] += 1
+                s["totalFront"] += front
+                s["totalBack"] += back
+                s["maxFront"] = max(s["maxFront"], front)
+                if total > s["best"]:
+                    s["best"] = total
+                if is_latest:
+                    s["current"] = total
+                    s["currentFront"] = front
+                    s["backHit"] = back
+                    front_hits = hr.get("front_hits", [])
+                    s["frontHits"] = " ".join(front_hits) if front_hits else "—"
+    return stats
+
+
+def _build_ranking_html(hist, limit=8):
+    """命中排行 HTML — 最新一期 + 历史累计（各 Top N）"""
+    records = hist.get("predictions_history", []) if hist else []
+    if not records:
+        return '<p style="color:#94a3b8;font-size:13px;padding:12px">(暂无命中记录)</p>'
+
+    stats = _collect_ranking_stats(records)
+    cell = "padding:5px 6px;font-size:11px;"
+    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;"
+
+    # === 最新一期：按 后区命中 → 本期命中数 排序 ===
+    latest_arr = [s for s in stats.values() if s["current"] > 0]
+    latest_arr.sort(key=lambda x: (x["backHit"], x["current"]), reverse=True)
+    latest_top = latest_arr[:limit]
+
+    rows1 = ""
+    for i, r in enumerate(latest_top):
+        bg = _row_bg(i)
+        back_mark = f"{r['backHit']}后" if r["backHit"] > 0 else "—"
+        rows1 += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
+          <td style="{cell}color:#475569">{r["strategy"]}</td>
+          <td style="{cell}text-align:center;font-weight:700;color:#ef4444">{r["current"]}球</td>
+          <td style="{cell}color:#2563eb;font-family:monospace">{r["frontHits"]}</td>
+          <td style="{cell}text-align:center;font-weight:700;color:#3b82f6">{back_mark}</td>
+        </tr>'''
+    table1 = f'''
+    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">🏆 最新一期 Top {limit}</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:16px">
+      <thead><tr style="background:#f1f5f9">
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">模型</th>
+        <th style="{head}text-align:left">策略</th>
+        <th style="{head}text-align:center">本期命中</th>
+        <th style="{head}text-align:left">命中前区</th>
+        <th style="{head}text-align:center">后区</th>
+      </tr></thead>
+      <tbody>{rows1}</tbody>
+    </table>'''
+
+    # === 历史累计：按 总球数 → 累计后区 排序 ===
+    hist_arr = sorted(stats.values(), key=lambda x: (x["total"], x["totalBack"]), reverse=True)
+    hist_top = hist_arr[:limit]
+
+    rows2 = ""
+    for i, r in enumerate(hist_top):
+        bg = _row_bg(i)
+        rows2 += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
+          <td style="{cell}color:#475569">{r["strategy"]}</td>
+          <td style="{cell}text-align:center;color:#475569">{r["best"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["totalFront"]}球</td>
+          <td style="{cell}text-align:center;color:#3b82f6;font-weight:600">{r["totalBack"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["currentFront"]}球</td>
+          <td style="{cell}text-align:center;color:#ef4444;font-weight:600">{r["maxFront"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["games"]}期</td>
+        </tr>'''
+    table2 = f'''
+    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">📈 历史累计排行 Top {limit}</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+      <thead><tr style="background:#f1f5f9">
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">模型</th>
+        <th style="{head}text-align:left">策略</th>
+        <th style="{head}text-align:center">历史最多</th>
+        <th style="{head}text-align:center">累计前区</th>
+        <th style="{head}text-align:center">累计后区</th>
+        <th style="{head}text-align:center">本期前区</th>
+        <th style="{head}text-align:center">单期最多前区</th>
+        <th style="{head}text-align:center">期数</th>
+      </tr></thead>
+      <tbody>{rows2}</tbody>
+    </table>'''
+
+    return table1 + table2
+
+
+def _build_model_group_html(hist, limit=8):
+    """模型分组统计 — 每个模型的 3 种策略合并后按累计命中排序 Top N"""
     records = hist.get("predictions_history", []) if hist else []
     if not records:
         return '<p style="color:#94a3b8;font-size:13px;padding:12px">(暂无命中记录)</p>'
@@ -195,100 +332,138 @@ def _build_ranking_html(hist, limit=10):
     latest_record = records[0]
     stats = {}
     for rec in records:
-        is_latest = (rec is latest_record)
+        is_latest = rec is latest_record
         for m in rec.get("models", []):
+            name = m.get("model_name", "—")
+            s = stats.get(name)
+            if s is None:
+                s = stats[name] = {
+                    "model": name, "total": 0, "totalFront": 0,
+                    "totalBack": 0, "maxFront": 0, "current": 0,
+                    "periods": set(),
+                }
+            s["periods"].add(str(rec.get("target_period", "")))
             for pred in m.get("predictions", []):
                 hr = pred.get("hit_result")
                 if not hr:
                     continue
-                key = f"{m['model_name']}|{pred.get('strategy','—')}"
-                if key not in stats:
-                    stats[key] = {"model": m["model_name"], "strategy": pred.get("strategy","—"),
-                                   "total": 0, "best": 0, "games": 0, "current": 0, "hits": "",
-                                   "backTotal": 0, "frontHits": "", "backHit": 0}
-                t = hr.get("total_hits", 0)
-                stats[key]["total"] += t
-                stats[key]["games"] += 1
-                stats[key]["backTotal"] += hr.get("back_hit_count", 0)
-                if t > stats[key]["best"]:
-                    stats[key]["best"] = t
+                total = hr.get("total_hits", 0)
+                front = hr.get("front_hit_count", 0)
+                s["total"] += total
+                s["totalFront"] += front
+                s["totalBack"] += hr.get("back_hit_count", 0)
+                s["maxFront"] = max(s["maxFront"], front)
                 if is_latest:
-                    stats[key]["current"] = t
-                    fh = hr.get("front_hits", [])
-                    bh = hr.get("back_hit_count", 0)
-                    stats[key]["frontHits"] = " ".join(fh) if fh else "—"
-                    stats[key]["backHit"] = bh
+                    s["current"] += total
 
-    # === 最新一期排行：按 后区命中 → 本期命中数 排序 ===
-    latest_arr = [s for s in stats.values() if s["current"] > 0]
-    latest_arr.sort(key=lambda x: (x["backHit"], x["current"]), reverse=True)
-    latest_top = latest_arr[:limit]
+    arr = sorted(stats.values(), key=lambda x: (x["total"], x["totalBack"]), reverse=True)[:limit]
+    cell = "padding:5px 6px;font-size:11px;"
+    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;"
 
-    # === 历史累计排行：按 总球数 → 累计后区 排序 ===
-    hist_arr = list(stats.values())
-    hist_arr.sort(key=lambda x: (x["total"], x["backTotal"]), reverse=True)
-    hist_top = hist_arr[:limit]
-
-    # --- 最新一期表格 ---
-    rows1 = ""
-    for i, r in enumerate(latest_top):
-        medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"{i+1}")
-        bg = "#fefce8" if i == 0 else "#f8fafc" if i % 2 == 0 else "#ffffff"
-        back_mark = f"{r['backHit']}后" if r["backHit"] > 0 else "—"
-        rows1 += f'''
+    rows = ""
+    for i, r in enumerate(arr):
+        bg = _row_bg(i)
+        rows += f'''
         <tr style="background:{bg}">
-          <td style="padding:6px 8px;text-align:center;font-weight:700;font-size:13px">{medal}</td>
-          <td style="padding:6px 8px;font-weight:600;color:#1e293b;font-size:12px">{r["model"]}</td>
-          <td style="padding:6px 8px;color:#475569;font-size:11px">{r["strategy"]}</td>
-          <td style="padding:6px 8px;text-align:center;font-weight:700;color:#ef4444;font-size:13px">{r["current"]}球</td>
-          <td style="padding:6px 8px;color:#2563eb;font-size:11px;font-family:monospace">{r["frontHits"]}</td>
-          <td style="padding:6px 8px;text-align:center;font-weight:700;color:#3b82f6;font-size:13px">{back_mark}</td>
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{cell}font-weight:600;color:#1e293b">{r["model"]}</td>
+          <td style="{cell}text-align:center;color:#475569;font-weight:600">{r["total"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["totalFront"]}球</td>
+          <td style="{cell}text-align:center;color:#3b82f6">{r["totalBack"]}球</td>
+          <td style="{cell}text-align:center;color:#ef4444;font-weight:600">{r["maxFront"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["current"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{len(r["periods"])}期</td>
         </tr>'''
-    table1 = f'''
-    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">🏆 最新一期 Top 10</div>
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;font-size:14px;margin-bottom:16px">
+
+    return f'''
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
       <thead><tr style="background:#f1f5f9">
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">#</th>
-        <th style="padding:6px 8px;text-align:left;color:#64748b;font-size:11px">模型</th>
-        <th style="padding:6px 8px;text-align:left;color:#64748b;font-size:11px">策略</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">本期命中</th>
-        <th style="padding:6px 8px;text-align:left;color:#64748b;font-size:11px">命中前区</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">后区</th>
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">模型</th>
+        <th style="{head}text-align:center">累计命中</th>
+        <th style="{head}text-align:center">累计前区</th>
+        <th style="{head}text-align:center">累计后区</th>
+        <th style="{head}text-align:center">单期最多前区</th>
+        <th style="{head}text-align:center">本期命中</th>
+        <th style="{head}text-align:center">期数</th>
       </tr></thead>
-      <tbody>{rows1}</tbody>
+      <tbody>{rows}</tbody>
     </table>'''
 
-    # --- 历史累计排行表格 ---
-    rows2 = ""
-    for i, r in enumerate(hist_top):
-        medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"{i+1}")
-        bg = "#fefce8" if i == 0 else "#f8fafc" if i % 2 == 0 else "#ffffff"
-        rows2 += f'''
-        <tr style="background:{bg}">
-          <td style="padding:6px 8px;text-align:center;font-weight:700;font-size:13px">{medal}</td>
-          <td style="padding:6px 8px;font-weight:600;color:#1e293b;font-size:12px">{r["model"]}</td>
-          <td style="padding:6px 8px;color:#475569;font-size:11px">{r["strategy"]}</td>
-          <td style="padding:6px 8px;text-align:center;color:#475569;font-size:12px">{r["best"]}球</td>
-          <td style="padding:6px 8px;text-align:center;color:#475569;font-size:12px">{r["total"]}球</td>
-          <td style="padding:6px 8px;text-align:center;color:#3b82f6;font-weight:600;font-size:12px">{r["backTotal"]}球</td>
-          <td style="padding:6px 8px;text-align:center;color:#475569;font-size:12px">{r["games"]}期</td>
-        </tr>'''
-    table2 = f'''
-    <div style="font-size:13px;font-weight:700;color:#1e293b;margin:12px 0 6px">📊 历史累计排行</div>
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;font-size:14px">
-      <thead><tr style="background:#f1f5f9">
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">#</th>
-        <th style="padding:6px 8px;text-align:left;color:#64748b;font-size:11px">模型</th>
-        <th style="padding:6px 8px;text-align:left;color:#64748b;font-size:11px">策略</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">历史最多</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">累计前区</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">累计后区</th>
-        <th style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px">期数</th>
-      </tr></thead>
-      <tbody>{rows2}</tbody>
-    </table>'''
 
-    return table1 + table2
+def _build_recommendations_html(pred, hist, latest_period="", next_period=""):
+    """本期推荐 — 从当前预测中挑选历史累计命中最高的策略组合"""
+    if not pred or not pred.get("models"):
+        return '<p style="color:#94a3b8;font-size:13px">(暂无预测数据)</p>'
+
+    records = hist.get("predictions_history", []) if hist else []
+    current = {}
+    for m in pred["models"]:
+        for g in m.get("predictions", []):
+            current[(m.get("model_id"), g.get("strategy"))] = (m, g)
+
+    picks = []
+    seen = set()
+
+    def add_pick(model, group, entry=None):
+        signature = (
+            tuple(group.get("front_balls", [])),
+            tuple(group.get("back_balls", [])),
+        )
+        if signature in seen:
+            return False
+        seen.add(signature)
+        picks.append((model, group, entry))
+        return True
+
+    # 优先使用历史累计命中最高的策略
+    for entry in rank_strategies(records):
+        item = current.get((entry["model_id"], entry["strategy"]))
+        if not item:
+            continue
+        if add_pick(item[0], item[1], entry) and len(picks) >= 3:
+            break
+
+    # 历史数据不足时用当前预测补齐
+    if len(picks) < 3:
+        for m in pred["models"]:
+            for g in m.get("predictions", []):
+                if add_pick(m, g) and len(picks) >= 3:
+                    break
+            if len(picks) >= 3:
+                break
+
+    if not picks:
+        return '<p style="color:#94a3b8;font-size:13px">(暂无可推荐预测)</p>'
+
+    cards = ""
+    for i, (model, group, entry) in enumerate(picks, 1):
+        fronts = "".join(_ball(b, "front") for b in group.get("front_balls", []))
+        backs = "".join(_ball(b, "back") for b in group.get("back_balls", []))
+        base = f'{model.get("model_name", "—")} · {group.get("strategy", "—")}'
+        if entry:
+            basis = f'历史累计 {entry["total_hits"]} 球 / {entry["games"]} 期'
+        else:
+            basis = "按当前预测顺序"
+        cards += f'''
+        <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#f8fafc">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:#3b82f6">推荐 {i}</span>
+            <span style="font-size:11px;color:#64748b">{base}</span>
+          </div>
+          <div>{fronts}<span style="color:#94a3b8;margin:0 4px">|</span>{backs}</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px">{basis}</div>
+        </div>'''
+
+    period_line = ""
+    if latest_period or next_period:
+        period_line = (
+            f'<div style="font-size:12px;color:#64748b;margin-bottom:10px">'
+            f'基于第 {latest_period or "—"} 期开奖 · 目标第 {next_period or "—"} 期 · '
+            f'按历史累计命中排序</div>'
+        )
+
+    return period_line + cards
 
 
 def build_html_digest(data, warnings, generated_at, commit_info=None):
@@ -358,9 +533,13 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         {commit_html}
         {_SECTION.format("🏆 最新开奖")}
         {_build_latest_draw_html(latest, nd)}
-        {_SECTION.format("📊 命中排行 Top 10")}
-        {_build_ranking_html(hist)}
-        {_SECTION.format("🔮 AI 全部预测")}
+        {_SECTION.format("🔮 本期推荐")}
+        {_build_recommendations_html(pred, hist, latest_period, next_period)}
+        {_SECTION.format("📊 命中排行 Top 8")}
+        {_build_ranking_html(hist, limit=8)}
+        {_SECTION.format("📈 模型分组统计 Top 8")}
+        {_build_model_group_html(hist, limit=8)}
+        {_SECTION.format("🤖 AI 全部预测")}
         {_build_predictions_html(pred, latest_period, next_period)}
       </div>
       <div style="background:#f8fafc;padding:16px 24px;text-align:center;border-top:1px solid #e2e8f0;border-radius:0 0 12px 12px">

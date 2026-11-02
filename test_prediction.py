@@ -54,9 +54,9 @@ def test_prediction_file():
 
             errors = []
 
-            # 检查预测组数量（统计模型可为1-4组）
+            # 检查预测组数量（每个模型只保留历史命中最高的 3 组策略）
             n_preds = len(predictions)
-            if n_preds < 1 or n_preds > 4:
+            if n_preds < 1 or n_preds > 3:
                 errors.append(f"预测组数量不正确: {n_preds}")
 
             # 检查每组预测

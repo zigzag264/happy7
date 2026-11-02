@@ -23,8 +23,15 @@ if SCRIPT_DIR not in sys.path:
 from strategies import get_all_strategies
 from strategies.base import load_history, get_next_draw_info, get_recent_draws
 from strategies.archive import archive_prediction_if_drawn
+from strategies.selection import (
+    DEFAULT_TOP_N,
+    filter_predictions,
+    load_predictions_history,
+    select_top_strategies,
+)
 
 AI_PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, "data", "ai_predictions.json")
+TOP_N_STRATEGIES = DEFAULT_TOP_N
 
 
 def run_all_strategies(history, target_period, target_date, prediction_date,
@@ -149,6 +156,24 @@ def save_predictions(output, output_file=None):
     print(f"\n💾 已保存 {len(output.get('models', []))} 个模型预测到 {os.path.basename(target)}（紧凑格式，{len(json_str)} bytes）\n")
 
 
+def apply_strategy_selection(output, top_n=TOP_N_STRATEGIES):
+    """每个模型只保留历史累计命中最高的 top_n 种策略(原地修改 output)"""
+    records = load_predictions_history()
+    if not records:
+        print("  ⚠️ 命中历史为空，跳过策略裁剪，保留全部预测组")
+        return output
+
+    selection = select_top_strategies(records, top_n)
+    before = sum(len(m.get("predictions", [])) for m in output.get("models", []))
+    filtered = filter_predictions(output, selection, top_n)
+    after = sum(len(m.get("predictions", [])) for m in filtered.get("models", []))
+
+    output["models"] = filtered["models"]
+    print(f"✂️  策略裁剪: {before} → {after} 组"
+          f"（每个模型保留历史命中最高的 {top_n} 种）")
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description='大乐透策略模型运行器')
     parser.add_argument('--models', type=str, help='要运行的模型ID（逗号分隔）')
@@ -194,6 +219,7 @@ def main():
     )
 
     if output and output.get("models"):
+        apply_strategy_selection(output)
         save_predictions(output, args.output)
     else:
         print("❌ 没有生成任何预测")

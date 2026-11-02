@@ -20,6 +20,7 @@ happy7/
 │   ├── base.py                       # 策略基类与工具函数
 │   ├── runner.py                     # 策略模型运行入口
 │   ├── archive.py                    # 开奖后归档命中结果到 predictions_history.json
+│   ├── selection.py                  # 按历史累计命中为每个模型保留 Top3 策略
 │   ├── markov_chain.py               # 马尔科夫链
 │   ├── bayesian.py                   # 贝叶斯推断
 │   ├── arima_model.py                # 时间序列 ARIMA
@@ -77,6 +78,20 @@ happy7/
 | 推送通知 | 每次 push 到 master | 代码/数据变更时发送邮件通知 |
 
 也可在 GitHub 仓库 → Actions 页面手动触发 `workflow_dispatch`。
+
+> 每个模型生成 4 种策略变体后,`strategies/selection.py` 会按历史累计命中球数只保留前 3 种。
+> 查看当前排名:`python -m strategies.selection --dry-run`。
+
+### 推送邮件内容
+
+每日汇总与 push 通知共用同一模板,板块顺序:
+
+1. **最新开奖** — 最新一期号码 + 下期预告
+2. **本期推荐** — 按历史累计命中挑选 3 组当前预测
+3. **最新一期 Top 8** — 本期命中排行
+4. **历史累计排行 Top 8** — 含本期前区、单期最多前区两列
+5. **模型分组统计 Top 8** — 每个模型 3 种策略合并统计
+6. **AI 全部预测** — 每模型 3 种策略
 
 ### 手动更新（本地）
 
