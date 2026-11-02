@@ -289,6 +289,99 @@ def _build_ball_hit_html(records):
     </table>'''
 
 
+def _build_best_combo_html(hist, limit=10, threshold=5):
+    """最佳组合 — 两两合并两个「模型+策略」的号码并去重,
+    单期命中 >= threshold 球计 1 次,按次数取 Top N。
+    """
+    records = hist.get("predictions_history", []) if hist else []
+    if not records:
+        return '<p style="color:#94a3b8;font-size:11px;padding:10px">(暂无命中记录)</p>'
+
+    stats = {}
+    for rec in records:
+        actual = rec.get("actual_result") or {}
+        actual_front = set(actual.get("front_balls", []))
+        actual_back = set(actual.get("back_balls", []))
+
+        entries = []
+        for model in rec.get("models", []):
+            model_id = model.get("model_id", "")
+            model_name = model.get("model_name", "—")
+            for group in model.get("predictions", []):
+                if not group.get("hit_result"):
+                    continue
+                strategy = group.get("strategy", "—")
+                entries.append((
+                    model_id, strategy, f"{model_name}·{strategy}",
+                    set(group.get("front_balls", [])),
+                    set(group.get("back_balls", [])),
+                ))
+
+        for i in range(len(entries)):
+            mid_a, strat_a, label_a, front_a, back_a = entries[i]
+            for j in range(i + 1, len(entries)):
+                mid_b, strat_b, label_b, front_b, back_b = entries[j]
+                if mid_a == mid_b and strat_a == strat_b:
+                    continue
+                key = tuple(sorted([(mid_a, strat_a), (mid_b, strat_b)]))
+                hits = (len((front_a | front_b) & actual_front)
+                        + len((back_a | back_b) & actual_back))
+                s = stats.get(key)
+                if s is None:
+                    s = stats[key] = {
+                        "a": label_a, "b": label_b,
+                        "count": 0, "best": 0, "total": 0, "games": 0,
+                    }
+                s["games"] += 1
+                s["total"] += hits
+                s["best"] = max(s["best"], hits)
+                if hits >= threshold:
+                    s["count"] += 1
+
+    rows = sorted(
+        stats.values(),
+        key=lambda s: (-s["count"], -s["best"],
+                       -(s["total"] / max(s["games"], 1)), s["a"], s["b"]),
+    )
+    top = [r for r in rows if r["count"] > 0][:limit]
+    if not top:
+        return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
+                f'(暂无组合单期达到 {threshold} 球)</p>')
+
+    cell = "padding:5px 6px;font-size:10px;line-height:1.5;"
+    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
+    body = ""
+    for i, r in enumerate(top):
+        bg = _row_bg(i)
+        avg = r["total"] / r["games"] if r["games"] else 0
+        body += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{cell}">
+            <div style="font-weight:600;color:#0f172a">{r["a"]}</div>
+            <div style="color:#64748b;margin-top:1px">+ {r["b"]}</div>
+          </td>
+          <td style="{cell}text-align:center;font-weight:700;color:#ef4444">{r["count"]}次</td>
+          <td style="{cell}text-align:center;color:#475569">{r["best"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{avg:.2f}球</td>
+        </tr>'''
+
+    return f'''
+    <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
+      两两合并号码并去重，单期命中 ≥{threshold} 球计 1 次 · 按次数取 Top {limit}
+    </div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">组合（模型·策略）</th>
+        <th style="{head}text-align:center">≥{threshold}球次数</th>
+        <th style="{head}text-align:center">单期最高</th>
+        <th style="{head}text-align:center">平均命中</th>
+      </tr></thead>
+      <tbody>{body}</tbody>
+    </table>'''
+
+
 def _build_ranking_html(hist, limit=8):
     """命中排行 HTML — 最新一期 + 历史累计（各 Top N）"""
     records = hist.get("predictions_history", []) if hist else []
@@ -604,6 +697,8 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         {_build_recommendations_html(pred, hist, latest_period, next_period, limit=10)}
         {_SECTION.format("📊 命中排行 Top 8")}
         {_build_ranking_html(hist, limit=8)}
+        {_SECTION.format("🏅 最佳组合")}
+        {_build_best_combo_html(hist, limit=10)}
         {_SECTION.format("📈 模型分组统计 Top 8")}
         {_build_model_group_html(hist, limit=8)}
         {_SECTION.format("🤖 AI 全部预测")}
