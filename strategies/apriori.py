@@ -1,236 +1,256 @@
 # -*- coding: utf-8 -*-
 """
-⑦ 关联规则挖掘 Apriori 预测模型
-挖掘频繁项集和关联规则，发现号码共现规律
+⑦ 关联规则挖掘 Apriori 预测模型 (v2)
+
+v2 变化:
+  - 用“平滑共现概率”替代离散规则 + 01-05 兜底
+  - 频繁项集设置最低支持度(>=3 次)，无匹配时回退到基础频率
+  - 后区三种策略独立建模，不再共用同一个后区列表
+  - 新增前区→后区跨区条件概率
+  - 输出 3 种可区分策略:共现平滑 / 频繁项集 / 跨区规则
 """
 
-from collections import defaultdict, Counter
+from collections import Counter, defaultdict
 from itertools import combinations
-from typing import List, Dict, Set, Tuple
+from typing import Dict, List, Tuple
+
 from .base import (
-    BaseStrategy, format_ball, sort_balls, compute_frequency,
-    validate_prediction_group
+    BaseStrategy, format_ball, sort_balls,
+    get_interval_distribution, compute_parity, compute_sum,
+    validate_prediction_group,
 )
 
 
 class AprioriStrategy(BaseStrategy):
-    """关联规则挖掘 Apriori 预测模型"""
+    """关联规则挖掘 Apriori 预测模型 v2"""
 
     MODEL_ID = "apriori-rules"
     MODEL_NAME = "关联规则Apriori"
     MODEL_TYPE = "ml"
 
-    def _get_itemsets(self, data: List[Dict], key: str, min_support: float) -> Dict[Tuple[str, ...], float]:
-        """获取频繁项集"""
-        n = len(data)
-        transactions = [set(d.get(key, [])) for d in data]
+    DECAY = 0.95          # 越新的开奖权重越高
+    MIN_PAIR_COUNT = 3    # 2-项集最低出现次数
+    PAIR_ALPHA = 2.0      # 共现平滑系数
 
-        # 1-项集
+    @staticmethod
+    def _normalize(scores: Dict[str, float]) -> Dict[str, float]:
+        total = sum(max(v, 0.0) for v in scores.values())
+        if total <= 0:
+            n = max(len(scores), 1)
+            return {k: 1.0 / n for k in scores}
+        return {k: max(v, 0.0) / total for k, v in scores.items()}
+
+    def _weighted_stats(self, data: List[Dict], key: str, pool_size: int):
+        """带时间衰减的 base / pair / anchor 计数（data 为 newest-first）"""
+        base_counts = Counter()
+        anchor_counts = Counter()
+        pair_counts = defaultdict(float)
+        total_weight = 0.0
+
+        for idx, draw in enumerate(data):
+            weight = self.DECAY ** idx
+            items = set(draw.get(key, []))
+            total_weight += weight
+            for b in items:
+                base_counts[b] += weight
+            for a in items:
+                anchor_counts[a] += weight
+                for b in items:
+                    if a != b:
+                        pair_counts[(a, b)] += weight
+
+        balls = [format_ball(i) for i in range(1, pool_size + 1)]
+        denom = total_weight if total_weight > 0 else 1.0
+        base = {b: base_counts.get(b, 0.0) / denom for b in balls}
+        return base, pair_counts, anchor_counts, denom
+
+    def _frequency_scores(self, base) -> Dict[str, float]:
+        return self._normalize(base)
+
+    def _cooccurrence_scores(self, base, pair_counts, anchor_counts,
+                             anchors, pool_size) -> Dict[str, float]:
+        """P(候选球 | 上期锚点球) 的平滑平均"""
+        balls = [format_ball(i) for i in range(1, pool_size + 1)]
+        scores = {}
+        for b in balls:
+            total = 0.0
+            for x in anchors:
+                if x == b:
+                    continue
+                cx = anchor_counts.get(x, 0.0)
+                cxb = pair_counts.get((x, b), 0.0)
+                cond = ((cxb + self.PAIR_ALPHA * base[b]) / (cx + self.PAIR_ALPHA)
+                        if cx + self.PAIR_ALPHA > 0 else base[b])
+                total += cond
+            scores[b] = total / max(len(anchors), 1)
+        return self._normalize(scores)
+
+    def _frequent_pair_scores(self, data: List[Dict], key: str, pool_size: int,
+                              last_items: List[str]) -> Tuple[Dict[str, float], int]:
+        """频繁 2-项集：支持度 >= MIN_PAIR_COUNT，按 support × lift 加权"""
+        n = max(len(data), 1)
         item_counts = Counter()
-        for t in transactions:
-            for item in t:
+        pair_counts = Counter()
+
+        for draw in data:
+            items = sorted(set(draw.get(key, [])))
+            for item in items:
                 item_counts[item] += 1
+            for a, b in combinations(items, 2):
+                pair_counts[(a, b)] += 1
 
-        freq_1 = {tuple([item]): count / n
-                  for item, count in item_counts.items()
-                  if count / n >= min_support}
+        base = {format_ball(i): item_counts.get(format_ball(i), 0) / n
+                for i in range(1, pool_size + 1)}
+        scores = dict(base)
+        last_set = set(last_items)
+        matched = 0
 
-        if not freq_1:
-            # 放宽支持度
-            freq_1 = {tuple([item]): count / n
-                      for item, count in item_counts.most_common(10)}
-
-        # 2-项集
-        freq_2 = {}
-        item_list = list(set(item for itemset in freq_1 for item in itemset))
-        for pair in combinations(item_list, 2):
-            count = sum(1 for t in transactions if pair[0] in t and pair[1] in t)
-            support = count / n
-            if support >= min_support * 0.5:
-                freq_2[tuple(sorted(pair))] = support
-
-        # 3-项集
-        freq_3 = {}
-        item_list_2 = list(set(item for itemset in freq_2 for item in itemset))
-        for triple in combinations(item_list_2, 3):
-            count = sum(1 for t in transactions if all(item in t for item in triple))
-            support = count / n
-            if support >= min_support * 0.3:
-                freq_3[tuple(sorted(triple))] = support
-
-        return freq_1, freq_2, freq_3, transactions
-
-    def _generate_rules(self, freq_itemsets: Dict[Tuple[str, ...], float],
-                         transactions: List[Set[str]],
-                         n: int) -> List[Dict]:
-        """从频繁项集生成关联规则"""
-        rules = []
-        for itemset, support in freq_itemsets.items():
-            if len(itemset) < 2:
+        for (a, b), count in pair_counts.items():
+            if count < self.MIN_PAIR_COUNT:
                 continue
-            for i in range(1, len(itemset)):
-                for antecedent in combinations(itemset, i):
-                    consequent = tuple(item for item in itemset if item not in antecedent)
-                    if not consequent:
-                        continue
+            support = count / n
+            base_a = max(base.get(a, 0.0), 1e-9)
+            base_b = max(base.get(b, 0.0), 1e-9)
+            lift = min(support / (base_a * base_b), 3.0)
+            if a in last_set:
+                scores[b] = scores.get(b, 0.0) + support * lift
+                matched += 1
+            if b in last_set:
+                scores[a] = scores.get(a, 0.0) + support * lift
+                matched += 1
 
-                    # 置信度
-                    ant_count = sum(1 for t in transactions if all(item in t for item in antecedent))
-                    if ant_count == 0:
-                        continue
-                    confidence = support * n / ant_count
+        return self._normalize(scores), matched
 
-                    # 提升度
-                    cons_count = sum(1 for t in transactions if all(item in t for item in consequent))
-                    if cons_count == 0:
-                        continue
-                    lift = confidence / (cons_count / n)
+    def _cross_zone_scores(self, data: List[Dict], last_fronts: List[str],
+                           pool_size: int = 12) -> Dict[str, float]:
+        """前区上期号码 → 后区候选球的平滑条件概率"""
+        base_counts = Counter()
+        front_counts = Counter()
+        pair_counts = defaultdict(float)
+        total_weight = 0.0
 
-                    rules.append({
-                        "antecedent": set(antecedent),
-                        "consequent": set(consequent),
-                        "support": support,
-                        "confidence": confidence,
-                        "lift": lift,
-                    })
+        for idx, draw in enumerate(data):
+            weight = self.DECAY ** idx
+            total_weight += weight
+            fronts = set(draw.get("front_balls", []))
+            backs = set(draw.get("back_balls", []))
+            for b in backs:
+                base_counts[b] += weight
+            for f in fronts:
+                front_counts[f] += weight
+                for b in backs:
+                    pair_counts[(f, b)] += weight
 
-        # 按提升度排序
-        rules.sort(key=lambda r: r["lift"], reverse=True)
-        return rules
+        denom = total_weight if total_weight > 0 else 1.0
+        balls = [format_ball(i) for i in range(1, pool_size + 1)]
+        base = {b: base_counts.get(b, 0.0) / denom for b in balls}
+        alpha = 1.0
+        scores = {}
+        for b in balls:
+            total = 0.0
+            for f in last_fronts:
+                cf = front_counts.get(f, 0.0)
+                cfb = pair_counts.get((f, b), 0.0)
+                cond = (cfb + alpha * base[b]) / (cf + alpha) if cf + alpha > 0 else base[b]
+                total += cond
+            scores[b] = total / max(len(last_fronts), 1)
+        return self._normalize(scores)
 
-    def _predict_from_rules(self, last_draw: Dict, rules: List[Dict],
-                             key: str, pool_size: int) -> Dict[str, float]:
-        """基于关联规则预测"""
-        last_items = set(last_draw.get(key, []))
-        scores = defaultdict(float)
+    @staticmethod
+    def _blend(maps, weights):
+        base_map = next(iter(maps.values()))
+        result = {b: 0.0 for b in base_map}
+        for name, weight in weights.items():
+            for b, value in maps[name].items():
+                result[b] += weight * value
+        return AprioriStrategy._normalize(result)
 
-        for rule in rules:
-            # 检查前提是否匹配
-            if rule["antecedent"].issubset(last_items):
-                for item in rule["consequent"]:
-                    scores[item] += rule["confidence"] * rule["lift"]
+    @staticmethod
+    def _pick_top(scores, count):
+        return [b for b, _ in sorted(scores.items(), key=lambda kv: (-kv[1], int(kv[0])))[:count]]
 
-        return dict(scores)
+    @staticmethod
+    def _distinct_sets(sets, score_maps, count):
+        seen = set()
+        out = []
+        for picks, scores in zip(sets, score_maps):
+            picks = sort_balls(picks)
+            key = tuple(picks)
+            if key in seen:
+                ranked = [b for b in sorted(scores, key=lambda x: (-scores[x], int(x)))
+                          if b not in picks]
+                for candidate in ranked:
+                    new_picks = sort_balls(picks[:-1] + [candidate])
+                    if tuple(new_picks) not in seen:
+                        picks = new_picks
+                        key = tuple(new_picks)
+                        break
+            seen.add(key)
+            out.append(picks)
+        return out
 
     def predict(self) -> Dict:
         data = self.history_data
         if not data:
             return self._build_output([])
 
-        n = len(data)
-        min_support = 0.05
+        last_draw = data[0]  # newest-first
+        last_fronts = last_draw.get("front_balls", [])
+        last_backs = last_draw.get("back_balls", [])
 
-        # 前区关联规则
-        freq_1_f, freq_2_f, freq_3_f, trans_f = self._get_itemsets(data, "front_balls", min_support)
-        all_freq_f = {**freq_1_f, **freq_2_f, **freq_3_f}
-        rules_f = self._generate_rules(all_freq_f, trans_f, n)
+        front_base, front_pairs, front_anchors, _ = self._weighted_stats(
+            data, "front_balls", 35)
+        back_base, back_pairs, back_anchors, _ = self._weighted_stats(
+            data, "back_balls", 12)
 
-        # 后区关联规则
-        freq_1_b, freq_2_b, freq_3_b, trans_b = self._get_itemsets(data, "back_balls", min_support * 2)
-        all_freq_b = {**freq_1_b, **freq_2_b}
-        rules_b = self._generate_rules(all_freq_b, trans_b, n)
+        front_freq = self._frequency_scores(front_base)
+        back_freq = self._frequency_scores(back_base)
+        front_co = self._cooccurrence_scores(
+            front_base, front_pairs, front_anchors, last_fronts, 35)
+        back_co = self._cooccurrence_scores(
+            back_base, back_pairs, back_anchors, last_backs, 12)
+        front_pairs_scores, front_matched = self._frequent_pair_scores(
+            data, "front_balls", 35, last_fronts)
+        back_pairs_scores, back_matched = self._frequent_pair_scores(
+            data, "back_balls", 12, last_backs)
+        back_cross = self._cross_zone_scores(data, last_fronts, 12)
 
-        # 跨区规则（前区→后区）
-        cross_rules = []
-        for draw in data:
-            fronts = set(draw.get("front_balls", []))
-            backs = set(draw.get("back_balls", []))
-            for f in fronts:
-                for b in backs:
-                    count = sum(1 for d in data
-                               if f in d.get("front_balls", [])
-                               and b in d.get("back_balls", []))
-                    f_count = sum(1 for d in data if f in d.get("front_balls", []))
-                    if f_count > 0 and count / f_count >= 0.2:
-                        cross_rules.append({
-                            "antecedent": {f},
-                            "consequent": {b},
-                            "confidence": count / f_count,
-                            "lift": count / f_count / (sum(1 for d in data if b in d.get("back_balls", [])) / max(n, 1)),
-                        })
-
-        last_draw = data[0]
-
-        # 4 组策略
-
-        # 1. 高置信度规则
-        high_conf = [r for r in rules_f if r["confidence"] > 0.3]
-        scores1 = self._predict_from_rules(last_draw, high_conf, "front_balls", 35)
-        front1 = [b for b, _ in sorted(scores1.items(), key=lambda x: x[1], reverse=True)[:5]]
-        all_fronts = [format_ball(i) for i in range(1, 36)]
-        for b in all_fronts:
-            if len(front1) < 5 and b not in front1:
-                front1.append(b)
-
-        # 2. 高提升度规则
-        high_lift = sorted(rules_f, key=lambda r: r["lift"], reverse=True)[:20]
-        scores2 = self._predict_from_rules(last_draw, high_lift, "front_balls", 35)
-        front2 = [b for b, _ in sorted(scores2.items(), key=lambda x: x[1], reverse=True)[:5]]
-        for b in all_fronts:
-            if len(front2) < 5 and b not in front2:
-                front2.append(b)
-
-        # 3. 频繁项集
-        top_items = sorted(freq_2_f.items(), key=lambda x: x[1], reverse=True)
-        front3 = list(set(item for itemset, _ in top_items[:10] for item in itemset))
-        front3 = front3[:5]
-        for b in all_fronts:
-            if len(front3) < 5 and b not in front3:
-                front3.append(b)
-
-        # 4. 跨区规则
-        cross_scores = defaultdict(float)
-        for f in last_draw.get("front_balls", []):
-            for rule in cross_rules:
-                if f in rule["antecedent"]:
-                    for b in rule["consequent"]:
-                        cross_scores[b] += rule["confidence"]
-        backs = [b for b, _ in sorted(cross_scores.items(), key=lambda x: x[1], reverse=True)[:2]]
-        all_backs = [format_ball(i) for i in range(1, 13)]
-        for b in all_backs:
-            if len(backs) < 2 and b not in backs:
-                backs.append(b)
-
-        front4 = front3[:5]  # 复用频繁项集结果
-        for b in all_fronts:
-            if len(front4) < 5 and b not in front4:
-                front4.append(b)
-
-        # 后区
-        back_scores = defaultdict(float)
-        for rule in rules_b:
-            if rule["antecedent"].issubset(set(last_draw.get("back_balls", []))):
-                for item in rule["consequent"]:
-                    back_scores[item] += rule["confidence"]
-        back1 = [b for b, _ in sorted(back_scores.items(), key=lambda x: x[1], reverse=True)[:2]]
-        for b in all_backs:
-            if len(back1) < 2 and b not in back1:
-                back1.append(b)
-        back2 = list(back1)
-        back3 = list(back1)
-
-        from .base import get_interval_distribution, compute_sum
-
-        d1 = f"高置信度规则(conf>0.3)；{len(high_conf)}条规则命中；和值{compute_sum(front1)}"
-        d2 = f"高提升度规则(Lift Top20)；{len(high_lift)}条规则；和值{compute_sum(front2)}"
-        d3 = f"频繁2-项集Top10；support={top_items[0][1]:.3f}；和值{compute_sum(front3)}"
-        d4 = f"跨区规则(前→后)；{len(cross_rules)}条规则；后区推荐{backs}"
-
-        strategies = [
-            ("高置信度关联规则", front1, back1, d1),
-            ("高提升度关联规则", front2, back2, d2),
-            ("频繁项集挖掘", front3, back3, d3),
-            ("跨区关联规则", front4, backs, d4),
+        front_maps = [
+            self._blend({"freq": front_freq, "co": front_co}, {"freq": 0.35, "co": 0.65}),
+            front_pairs_scores,
+            self._blend({"freq": front_freq, "co": front_co}, {"freq": 0.50, "co": 0.50}),
+        ]
+        back_maps = [
+            self._blend({"freq": back_freq, "co": back_co}, {"freq": 0.45, "co": 0.55}),
+            self._blend({"freq": back_freq, "pairs": back_pairs_scores},
+                        {"freq": 0.50, "pairs": 0.50}),
+            self._blend({"freq": back_freq, "cross": back_cross},
+                        {"freq": 0.30, "cross": 0.70}),
         ]
 
+        front_sets = [self._pick_top(m, 5) for m in front_maps]
+        back_sets = [self._pick_top(m, 2) for m in back_maps]
+        front_sets = self._distinct_sets(front_sets, front_maps, 5)
+        back_sets = self._distinct_sets(back_sets, back_maps, 2)
+
+        details = [
+            "v2 平滑共现规则(衰减0.95, alpha=2.0；前区0.35频率+0.65共现)",
+            f"v2 频繁项集规则(2-项集>=3次；前区匹配{front_matched}条)",
+            "v2 跨区关联规则(前区0.50频率+0.50共现；后区前→后跨区0.70)",
+        ]
+        names = ["共现平滑规则", "频繁项集规则", "跨区关联规则"]
+
         predictions = []
-        for gid, (name, fronts, backs, desc) in enumerate(strategies, 1):
+        for i, (fronts, backs, detail) in enumerate(
+                zip(front_sets, back_sets, details), 1):
+            desc = (f"{detail}；和值{compute_sum(fronts)}；"
+                    f"奇偶{compute_parity(fronts)}；区间{get_interval_distribution(fronts)}")
             pred = {
-                "group_id": gid,
-                "strategy": name,
+                "group_id": i,
+                "strategy": names[i - 1],
                 "front_balls": sort_balls(fronts),
                 "back_balls": sort_balls(backs),
-                "description": desc
+                "description": desc,
             }
             if validate_prediction_group(pred):
                 predictions.append(pred)

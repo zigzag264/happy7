@@ -32,8 +32,27 @@ def get_next_draw_info(history: Dict) -> Tuple[str, str, str]:
 
 
 def get_recent_draws(history: Dict, n: int = 30) -> List[Dict]:
-    """获取最近 N 期开奖数据"""
+    """获取最近 N 期开奖数据（保持数据源顺序：最新在前）"""
     return history.get("data", [])[:n]
+
+
+def to_chronological(draws: List[Dict]) -> List[Dict]:
+    """把 newest-first 的开奖列表转成 oldest-first。
+
+    数据源 lottery_history.json 的 data 是最新在前，构造滚动特征/标签时必须
+    先转成时间升序，否则会拿新数据预测旧数据。
+    """
+    return list(reversed(draws))
+
+
+def draw_seed(target_period: str, salt: int = 0) -> int:
+    """按期号生成稳定随机种子，避免固定 seed 导致跨期重复。
+
+    salt 用于同一模型的不同策略，保证同策略在同一期回测时可复现。
+    """
+    text = str(target_period or "")
+    base = int(text) if text.isdigit() else sum(map(ord, text))
+    return (base * 1009 + salt * 7919) % (2 ** 31 - 1)
 
 
 def format_ball(n: int) -> str:
@@ -171,6 +190,8 @@ class BaseStrategy(ABC):
         self.target_period = target_period
         self.target_date = target_date
         self.prediction_date = prediction_date
+        # 回测可用不同 salt 复现多组随机结果；线上保持 0
+        self.seed_salt = 0
 
     @abstractmethod
     def predict(self) -> Dict:

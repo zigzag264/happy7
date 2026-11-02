@@ -148,6 +148,41 @@ def test_strategy_models():
         print(f"❌ 测试异常: {e}")
 
 
+def test_bottom3_v2():
+    """测试后三名模型 v2：3 组、有区分度、Apriori 无 01-05 兜底"""
+    print("\n" + "=" * 50)
+    print("测试后三名模型 v2")
+    print("=" * 50 + "\n")
+
+    try:
+        from strategies.base import load_history, get_recent_draws
+        from strategies.ensemble_ml import EnsembleMLStrategy
+        from strategies.monte_carlo import MonteCarloStrategy
+        from strategies.apriori import AprioriStrategy
+
+        history = load_history()
+        data = get_recent_draws(history, 30)
+        classes = [EnsembleMLStrategy, MonteCarloStrategy, AprioriStrategy]
+
+        for cls in classes:
+            output = cls(data, "TEST", "", "").predict()
+            preds = output.get("predictions", [])
+            assert len(preds) == 3, f"{cls.MODEL_NAME}: 预测组数量 {len(preds)}"
+            signatures = {(tuple(p["front_balls"]), tuple(p["back_balls"])) for p in preds}
+            assert len(signatures) == 3, f"{cls.MODEL_NAME}: 三种策略号码重复"
+            if cls is AprioriStrategy:
+                for pred in preds:
+                    assert pred["front_balls"] != ["01", "02", "03", "04", "05"], \
+                        "Apriori 出现 01-05 兜底"
+            print(f"  ✓ {cls.MODEL_NAME}: 3 组，号码有区分度")
+
+        print("\n✅ v2 模型测试通过")
+    except Exception as e:
+        print(f"\n❌ v2 模型测试失败: {e}")
+        raise
+
+
 if __name__ == "__main__":
     test_prediction_file()
     test_strategy_models()
+    test_bottom3_v2()

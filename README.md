@@ -81,6 +81,9 @@ happy7/
 
 > 每个模型生成 4 种策略变体后,`strategies/selection.py` 会按历史累计命中球数只保留前 3 种。
 > 查看当前排名:`python -m strategies.selection --dry-run`。
+>
+> 2026-11-02:随机森林/蒙特卡洛/Apriori 已 v2 重构,新增 walk-forward 回测
+> `python -m strategies.backtest --models rf,mc,apriori --periods 33 --seeds 3`。
 
 ### 推送邮件内容
 

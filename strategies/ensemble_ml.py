@@ -1,33 +1,54 @@
 # -*- coding: utf-8 -*-
 """
-⑤ 机器学习集成预测模型
+⑤ 机器学习集成预测模型 (v2)
 Random Forest 分类器预测每个号码的出现概率
+
+v2 修复:
+  - 历史数据按时间升序构造特征/标签(此前 newest-first 被当成了 oldest-first)
+  - 所有号码池化训练,样本量从 ~25/号码 提升到 ~700
+  - 分位数阈值控制树的分裂候选,纯 Python 下可跑
+  - 按期号生成随机种子,避免跨期重复
+  - 输出 3 种可区分的策略:纯 RF / 概率校准 / 近期加权
 """
 
 import math
-from collections import defaultdict
+import random
 from typing import List, Dict, Tuple
+
 from .base import (
     BaseStrategy, format_ball, sort_balls, compute_frequency,
-    compute_missing, validate_prediction_group
+    get_interval, get_interval_distribution, compute_parity, compute_sum,
+    to_chronological, draw_seed, validate_prediction_group,
 )
 
 
 class SimpleTree:
-    """简化版决策树"""
+    """简化版决策树(分位数阈值 + 平滑叶子概率)"""
 
-    def __init__(self, max_depth=4, min_samples=3):
+    def __init__(self, max_depth=4, min_samples=3, max_thresholds=12):
         self.max_depth = max_depth
         self.min_samples = min_samples
+        self.max_thresholds = max_thresholds
         self.tree = None
 
-    def _gini(self, labels):
+    @staticmethod
+    def _gini(labels):
         if not labels:
             return 0.0
         pos = sum(labels)
         n = len(labels)
         p = pos / n
         return 1.0 - p * p - (1 - p) * (1 - p)
+
+    def _candidate_thresholds(self, values):
+        if len(values) <= 1:
+            return []
+        if len(values) <= self.max_thresholds + 1:
+            return [(values[i] + values[i + 1]) / 2 for i in range(len(values) - 1)]
+        step = (len(values) - 1) / (self.max_thresholds + 1)
+        idxs = sorted({max(1, min(len(values) - 1, int(round(step * i))))
+                       for i in range(1, self.max_thresholds + 1)})
+        return [values[i] for i in idxs]
 
     def _split(self, X, y, feature_idx, threshold):
         left_x, left_y, right_x, right_y = [], [], [], []
@@ -40,41 +61,40 @@ class SimpleTree:
                 right_y.append(y[i])
         return left_x, left_y, right_x, right_y
 
+    def _leaf(self, y):
+        # 拉普拉斯平滑，避免 0/1 极端概率
+        return (sum(y) + 1.0) / (len(y) + 2.0)
+
     def _build(self, X, y, depth):
         if depth >= self.max_depth or len(X) < self.min_samples:
-            pos = sum(y)
-            return {"leaf": True, "prob": pos / max(len(y), 1)}
+            return {"leaf": True, "prob": self._leaf(y)}
 
-        best_gain = 0
-        best_feature = 0
-        best_threshold = 0
+        best_gain = 0.0
         best_partition = None
-
-        n_features = len(X[0]) if X else 0
+        best_feature = 0
+        best_threshold = 0.0
         base_gini = self._gini(y)
+        n_features = len(X[0]) if X else 0
 
         for feature_idx in range(n_features):
-            values = sorted(set(X[i][feature_idx] for i in range(len(X))))
-            for i in range(len(values) - 1):
-                threshold = (values[i] + values[i + 1]) / 2
+            values = sorted({X[i][feature_idx] for i in range(len(X))})
+            for threshold in self._candidate_thresholds(values):
                 left_x, left_y, right_x, right_y = self._split(X, y, feature_idx, threshold)
                 if not left_y or not right_y:
                     continue
-                weighted = len(left_y) / len(y) * self._gini(left_y) + \
-                           len(right_y) / len(y) * self._gini(right_y)
+                weighted = (len(left_y) / len(y) * self._gini(left_y)
+                            + len(right_y) / len(y) * self._gini(right_y))
                 gain = base_gini - weighted
                 if gain > best_gain:
                     best_gain = gain
+                    best_partition = (left_x, left_y, right_x, right_y)
                     best_feature = feature_idx
                     best_threshold = threshold
-                    best_partition = (left_x, left_y, right_x, right_y)
 
-        if best_gain < 0.01 or best_partition is None:
-            pos = sum(y)
-            return {"leaf": True, "prob": pos / max(len(y), 1)}
+        if best_gain < 0.005 or best_partition is None:
+            return {"leaf": True, "prob": self._leaf(y)}
 
         left_x, left_y, right_x, right_y = best_partition
-
         return {
             "leaf": False,
             "feature": best_feature,
@@ -98,243 +118,254 @@ class SimpleTree:
 
 
 class SimpleRandomForest:
-    """简化版随机森林"""
+    """简化版随机森林(局部随机数,可复现)"""
 
-    def __init__(self, n_estimators=30, max_depth=4, min_samples=3, max_features=None):
+    def __init__(self, n_estimators=24, max_depth=5, min_samples=3,
+                 max_features=None, max_thresholds=12, seed=0):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples = min_samples
         self.max_features = max_features
+        self.max_thresholds = max_thresholds
+        self.seed = seed
         self.trees = []
 
-    def fit(self, X, y, feature_importance=None):
-        import random
+    def fit(self, X, y):
+        rng = random.Random(self.seed)
         n_samples = len(X)
         n_features = len(X[0]) if X else 0
         if self.max_features is None:
             self.max_features = max(1, int(math.sqrt(n_features)))
 
         for _ in range(self.n_estimators):
-            # Bootstrap 抽样
-            indices = [random.randint(0, n_samples - 1) for _ in range(n_samples)]
+            indices = [rng.randint(0, n_samples - 1) for _ in range(n_samples)]
             X_boot = [X[i] for i in indices]
             y_boot = [y[i] for i in indices]
-
-            # 特征子集
-            features = random.sample(range(n_features), self.max_features)
+            features = rng.sample(range(n_features), min(self.max_features, n_features))
             X_sub = [[x[f] for f in features] for x in X_boot]
-
-            tree = SimpleTree(max_depth=self.max_depth, min_samples=self.min_samples)
+            tree = SimpleTree(
+                max_depth=self.max_depth,
+                min_samples=self.min_samples,
+                max_thresholds=self.max_thresholds,
+            )
             tree.fit(X_sub, y_boot)
             self.trees.append((features, tree))
-
         return self
 
     def predict_proba(self, x):
+        if not self.trees:
+            return 0.0
         probs = []
         for features, tree in self.trees:
-            x_sub = [x[f] for f in features]
-            probs.append(tree.predict_proba(x_sub))
+            probs.append(tree.predict_proba([x[f] for f in features]))
         return sum(probs) / len(probs)
 
 
 class EnsembleMLStrategy(BaseStrategy):
-    """机器学习集成预测模型"""
+    """机器学习集成预测模型 v2"""
 
     MODEL_ID = "ensemble-ml"
     MODEL_NAME = "随机森林集成"
     MODEL_TYPE = "ml"
 
-    def _build_features_sequences(self, data: List[Dict], key: str,
-                                   pool_size: int) -> Tuple[List[List[float]], List[List[int]]]:
-        """构建特征序列和标签"""
-        all_X = []
-        all_y = []
+    WINDOWS = (5, 10, 20)
+    MIN_HISTORY = 10
 
-        for t in range(5, len(data)):
-            X = []
-            y = []
+    # ---------- 特征 ----------
+
+    def _missing_count(self, chrono, ball, key):
+        miss = 0
+        for draw in reversed(chrono):
+            if ball in draw.get(key, []):
+                break
+            miss += 1
+        return miss
+
+    def _features_at(self, chrono, end, ball, key, pool_size):
+        """用 chrono[:end] 的信息构造号码特征（end 为预测期的下标）"""
+        freqs = {}
+        for window in self.WINDOWS:
+            start = max(0, end - window)
+            span = end - start
+            count = sum(1 for d in chrono[start:end] if ball in d.get(key, []))
+            freqs[window] = count / span if span else 0.0
+
+        total_count = sum(1 for d in chrono[:end] if ball in d.get(key, []))
+        total_rate = total_count / end if end else 0.0
+        missing = self._missing_count(chrono[:end], ball, key)
+
+        last1 = 1.0 if end >= 1 and ball in chrono[end - 1].get(key, []) else 0.0
+        last2 = 1.0 if end >= 2 and ball in chrono[end - 2].get(key, []) else 0.0
+
+        return [
+            int(ball) / pool_size,
+            get_interval(ball) / 2.0 if pool_size == 35 else 0.0,
+            int(ball) % 2,
+            freqs[5], freqs[10], freqs[20],
+            total_rate,
+            min(missing, 20) / 20.0,
+            freqs[5] - freqs[20],
+            last1, last2,
+        ]
+
+    def _build_samples(self, chrono, key, pool_size):
+        X, y = [], []
+        for end in range(self.MIN_HISTORY, len(chrono)):
             for i in range(1, pool_size + 1):
                 ball = format_ball(i)
+                X.append(self._features_at(chrono, end, ball, key, pool_size))
+                y.append(1 if ball in chrono[end].get(key, []) else 0)
+        return X, y
 
-                # 特征
-                features = []
-                # 最近5/10/20期的频率
-                for period in [5, 10, 20]:
-                    window = data[t-period:t]
-                    freq = sum(1 for d in window if ball in d.get(key, []))
-                    features.append(freq / period)
+    # ---------- 概率 ----------
 
-                # 当前遗漏期数
-                miss = 0
-                for d in data[t-1::-1]:
-                    if ball in d.get(key, []):
-                        break
-                    miss += 1
-                features.append(min(miss / 20, 1.0))
+    @staticmethod
+    def _normalize(scores):
+        total = sum(max(v, 0.0) for v in scores.values())
+        if total <= 0:
+            n = max(len(scores), 1)
+            return {k: 1.0 / n for k in scores}
+        return {k: max(v, 0.0) / total for k, v in scores.items()}
 
-                # 总体频率
-                total_freq = sum(1 for d in data[:t] if ball in d.get(key, []))
-                features.append(total_freq / max(t, 1))
+    def _frequency_scores(self, chrono, key, pool_size, window=None):
+        data = chrono[-window:] if window else chrono
+        counts = compute_frequency(data, pool_size, key)
+        return self._normalize(counts)
 
-                # 近期趋势
-                recent_freq = sum(1 for d in data[t-5:t] if ball in d.get(key, []))
-                features.append(recent_freq / 5 - total_freq / max(t, 1))
+    def _omission_scores(self, chrono, key, pool_size):
+        scores = {}
+        for i in range(1, pool_size + 1):
+            ball = format_ball(i)
+            scores[ball] = self._missing_count(chrono, ball, key) + 1.0
+        return self._normalize(scores)
 
-                # 上期是否出现
-                features.append(1.0 if data[t-1].get(key) and ball in data[t-1].get(key) else 0.0)
+    def _predict_probs(self, chrono, key, pool_size, n_estimators,
+                       max_depth, max_thresholds, seed):
+        X, y = self._build_samples(chrono, key, pool_size)
+        if len(X) < 30 or len(set(y)) < 2:
+            return self._frequency_scores(chrono, key, pool_size)
 
-                # 上上期
-                features.append(1.0 if t >= 2 and data[t-2].get(key) and ball in data[t-2].get(key) else 0.0)
+        forest = SimpleRandomForest(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            max_thresholds=max_thresholds,
+            seed=seed,
+        ).fit(X, y)
 
-                X.append(features)
-
-                # 标签
-                label = 1 if ball in data[t].get(key, []) else 0
-                y.append(label)
-
-            all_X.append(X)
-            all_y.append(y)
-
-        return all_X, all_y
-
-    def _predict_probs(self, data: List[Dict], key: str, pool_size: int,
-                        n_estimators: int = 30, max_depth: int = 4) -> Tuple[Dict[str, float], str]:
-        """训练并预测每个号码的概率"""
-        all_X, all_y = self._build_features_sequences(data, key, pool_size)
-        if not all_X:
-            return {format_ball(i): 0.1 for i in range(1, pool_size + 1)}, "数据不足"
-
-        import random
-        random.seed(42)
-
-        # 使用最后一个样本的特征作为预测输入
-        X_train = all_X[:-1] if len(all_X) > 1 else all_X
-        y_train = all_y[:-1] if len(all_y) > 1 else all_y
-
-        # 展平
-        X_flat = [x for sample in X_train for x in sample]
-        y_flat = [l for sample in y_train for l in sample]
-
-        # 特征索引到号码的映射
-        n_features_per_ball = len(X_flat[0]) if X_flat else 7
-
-        # 为每个号码训练一个分类器
         probs = {}
-        for ball_idx in range(pool_size):
-            # 提取该号码的所有样本
-            X_ball = [X_flat[j] for j in range(ball_idx, len(X_flat), pool_size)]
-            y_ball = [y_flat[j] for j in range(ball_idx, len(y_flat), pool_size)]
-
-            if len(X_ball) < 5:
-                probs[format_ball(ball_idx + 1)] = 0.1
-                continue
-
-            rf = SimpleRandomForest(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples=3
+        for i in range(1, pool_size + 1):
+            ball = format_ball(i)
+            probs[ball] = forest.predict_proba(
+                self._features_at(chrono, len(chrono), ball, key, pool_size)
             )
-            rf.fit(X_ball, y_ball)
+        if max(probs.values()) - min(probs.values()) < 1e-9:
+            return self._frequency_scores(chrono, key, pool_size)
+        return self._normalize(probs)
 
-            # 预测：用最新特征
-            latest_X = X_ball[-1]
-            probs[format_ball(ball_idx + 1)] = rf.predict_proba(latest_X)
+    # ---------- 选号 ----------
 
-        return probs, f"RF({n_estimators}树, depth={max_depth})"
+    @staticmethod
+    def _pick_top(scores, count):
+        return [b for b, _ in sorted(scores.items(), key=lambda kv: (-kv[1], int(kv[0])))[:count]]
+
+    @staticmethod
+    def _distinct_sets(sets, score_maps, count):
+        """避免三种策略给出完全相同的号码组合"""
+        seen = set()
+        out = []
+        for picks, scores in zip(sets, score_maps):
+            picks = sort_balls(picks)
+            key = tuple(picks)
+            if key in seen:
+                candidates = [b for b in sorted(scores, key=lambda x: (-scores[x], int(x)))
+                              if b not in picks]
+                for candidate in candidates:
+                    new_picks = sort_balls(picks[:-1] + [candidate])
+                    if tuple(new_picks) not in seen:
+                        picks = new_picks
+                        key = tuple(new_picks)
+                        break
+            seen.add(key)
+            out.append(picks)
+        return out
+
+    # ---------- 主流程 ----------
 
     def predict(self) -> Dict:
         data = self.history_data
         if not data:
             return self._build_output([])
 
-        all_fronts = [format_ball(i) for i in range(1, 36)]
-        all_backs = [format_ball(i) for i in range(1, 13)]
+        chrono = to_chronological(data)
+        seed_base = draw_seed(self.target_period, self.seed_salt)
 
-        # 4 组策略
-        # 1. 默认参数
-        probs_f1, model_desc1 = self._predict_probs(data, "front_balls", 35,
-                                                     n_estimators=30, max_depth=4)
-        probs_b1, _ = self._predict_probs(data, "back_balls", 12,
-                                           n_estimators=20, max_depth=3)
-        front1 = [b for b, _ in sorted(probs_f1.items(), key=lambda x: x[1], reverse=True)[:5]]
-        back1 = [b for b, _ in sorted(probs_b1.items(), key=lambda x: x[1], reverse=True)[:2]]
-        for b in all_fronts:
-            if len(front1) < 5 and b not in front1:
-                front1.append(b)
-        for b in all_backs:
-            if len(back1) < 2 and b not in back1:
-                back1.append(b)
-
-        # 2. 强正则化（浅树）
-        probs_f2, model_desc2 = self._predict_probs(data, "front_balls", 35,
-                                                     n_estimators=20, max_depth=2)
-        probs_b2, _ = self._predict_probs(data, "back_balls", 12,
-                                           n_estimators=15, max_depth=2)
-        front2 = [b for b, _ in sorted(probs_f2.items(), key=lambda x: x[1], reverse=True)[:5]]
-        back2 = [b for b, _ in sorted(probs_b2.items(), key=lambda x: x[1], reverse=True)[:2]]
-        for b in all_fronts:
-            if len(front2) < 5 and b not in front2:
-                front2.append(b)
-        for b in all_backs:
-            if len(back2) < 2 and b not in back2:
-                back2.append(b)
-
-        # 3. 深树
-        probs_f3, model_desc3 = self._predict_probs(data, "front_balls", 35,
-                                                     n_estimators=40, max_depth=6)
-        probs_b3, _ = self._predict_probs(data, "back_balls", 12,
-                                           n_estimators=25, max_depth=4)
-        front3 = [b for b, _ in sorted(probs_f3.items(), key=lambda x: x[1], reverse=True)[:5]]
-        back3 = [b for b, _ in sorted(probs_b3.items(), key=lambda x: x[1], reverse=True)[:2]]
-        for b in all_fronts:
-            if len(front3) < 5 and b not in front3:
-                front3.append(b)
-        for b in all_backs:
-            if len(back3) < 2 and b not in back3:
-                back3.append(b)
-
-        # 4. 概率加权（结合频率）
-        front_freq = compute_frequency(data, 35, "front_balls")
-        back_freq = compute_frequency(data, 12, "back_balls")
-        probs_f4 = {}
-        for i in range(1, 36):
-            b = format_ball(i)
-            probs_f4[b] = probs_f1.get(b, 0.1) * 0.7 + (front_freq.get(b, 0) / max(len(data), 1)) * 0.3
-        probs_b4 = {}
-        for i in range(1, 13):
-            b = format_ball(i)
-            probs_b4[b] = probs_b1.get(b, 0.1) * 0.7 + (back_freq.get(b, 0) / max(len(data), 1)) * 0.3
-        front4 = [b for b, _ in sorted(probs_f4.items(), key=lambda x: x[1], reverse=True)[:5]]
-        back4 = [b for b, _ in sorted(probs_b4.items(), key=lambda x: x[1], reverse=True)[:2]]
-        for b in all_fronts:
-            if len(front4) < 5 and b not in front4:
-                front4.append(b)
-        for b in all_backs:
-            if len(back4) < 2 and b not in back4:
-                back4.append(b)
-
-        from .base import get_interval_distribution, compute_sum
-        d1 = f"{model_desc1}；P(Top)={probs_f1[front1[0]]:.3f}；和值{compute_sum(front1)}"
-        d2 = f"{model_desc2}；P(Top)={probs_f2[front2[0]]:.3f}；和值{compute_sum(front2)}"
-        d3 = f"{model_desc3}；P(Top)={probs_f3[front3[0]]:.3f}；和值{compute_sum(front3)}"
-        d4 = f"RF+freq加权(0.7/0.3)；P(Top)={probs_f4[front4[0]]:.3f}；和值{compute_sum(front4)}"
-
-        strategies = [
-            ("RF默认参数", front1, back1, d1),
-            ("RF强正则化", front2, back2, d2),
-            ("RF深度树", front3, back3, d3),
-            ("RF概率加权", front4, back4, d4),
+        # 三种 RF 变体：默认 / 强正则(浅树) / 深度树。
+        # 共用池化特征，但不同深度与阈值数量，保证策略有真实差异。
+        configs = [
+            (24, 5, 12, 11, 23),
+            (20, 3, 8, 31, 43),
+            (24, 4, 10, 51, 63),
         ]
+        front_maps, back_maps = [], []
+        for n_estimators, depth, thresholds, front_salt, back_salt in configs:
+            front_maps.append(self._predict_probs(
+                chrono, "front_balls", 35, n_estimators=n_estimators,
+                max_depth=depth, max_thresholds=thresholds,
+                seed=seed_base + front_salt,
+            ))
+            back_maps.append(self._predict_probs(
+                chrono, "back_balls", 12, n_estimators=n_estimators,
+                max_depth=depth, max_thresholds=thresholds,
+                seed=seed_base + back_salt,
+            ))
+
+        front_sets = [self._pick_top(m, 5) for m in front_maps]
+
+        # 后区只有 12 个号码，纯池化 RF 容易过拟合；与长期/近期频率、
+        # 遗漏做适度融合，保住旧版后区命中水平。
+        back_long = self._frequency_scores(chrono, "back_balls", 12)
+        back_recent10 = self._frequency_scores(chrono, "back_balls", 12, window=10)
+        back_omit = self._omission_scores(chrono, "back_balls", 12)
+        back_blends = [
+            (0.60, 0.40, 0.0, 0.0),
+            (0.60, 0.20, 0.20, 0.0),
+            (0.50, 0.30, 0.0, 0.20),
+        ]
+        blended_backs = []
+        for rf, (w_rf, w_long, w_recent, w_omit) in zip(back_maps, back_blends):
+            blended_backs.append({
+                b: (w_rf * rf[b] + w_long * back_long[b]
+                    + w_recent * back_recent10[b] + w_omit * back_omit[b])
+                for b in rf
+            })
+        back_maps = blended_backs
+
+        back_sets = [self._pick_top(m, 2) for m in back_maps]
+        front_sets = self._distinct_sets(front_sets, front_maps, 5)
+        back_sets = self._distinct_sets(back_sets, back_maps, 2)
+
+        details = [
+            "v2 时序池化RF(默认:24树/depth5/12阈值)；后区0.6RF+0.4长期",
+            "v2 时序池化RF(强正则:20树/depth3/8阈值)；后区0.6RF+0.2长期+0.2近10",
+            "v2 时序池化RF(均衡:24树/depth4/10阈值)；后区0.5RF+0.3长期+0.2遗漏",
+        ]
+        names = ["RF时序池化", "RF正则池化", "RF均衡池化"]
+        strategies = []
+        for i, (fronts, backs, detail) in enumerate(
+                zip(front_sets, back_sets, details), 1):
+            prob = max(front_maps[i - 1].values())
+            desc = (f"{detail}；P(Top)={prob:.3f}；和值{compute_sum(fronts)}；"
+                    f"奇偶{compute_parity(fronts)}；区间{get_interval_distribution(fronts)}")
+            strategies.append((i, names[i - 1], fronts, backs, desc))
 
         predictions = []
-        for gid, (name, fronts, backs, desc) in enumerate(strategies, 1):
+        for gid, name, fronts, backs, desc in strategies:
             pred = {
                 "group_id": gid,
                 "strategy": name,
                 "front_balls": sort_balls(fronts),
                 "back_balls": sort_balls(backs),
-                "description": desc
+                "description": desc,
             }
             if validate_prediction_group(pred):
                 predictions.append(pred)
