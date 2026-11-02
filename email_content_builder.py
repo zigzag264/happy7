@@ -289,13 +289,20 @@ def _build_ball_hit_html(records):
     </table>'''
 
 
-def _build_best_combo_html(hist, limit=10, threshold=5):
+def _build_best_combo_html(hist, pred=None, limit=10, threshold=5):
     """最佳组合 — 两两合并两个「模型+策略」的号码并去重,
     单期命中 >= threshold 球计 1 次,按次数取 Top N。
+    每个模型+策略下方用小字显示其最新未开奖预测。
     """
     records = hist.get("predictions_history", []) if hist else []
     if not records:
         return '<p style="color:#94a3b8;font-size:11px;padding:10px">(暂无命中记录)</p>'
+
+    current = {}
+    if pred:
+        for model in pred.get("models", []):
+            for group in model.get("predictions", []):
+                current[(model.get("model_id"), group.get("strategy"))] = group
 
     stats = {}
     for rec in records:
@@ -323,13 +330,16 @@ def _build_best_combo_html(hist, limit=10, threshold=5):
                 mid_b, strat_b, label_b, front_b, back_b = entries[j]
                 if mid_a == mid_b and strat_a == strat_b:
                     continue
-                key = tuple(sorted([(mid_a, strat_a), (mid_b, strat_b)]))
+                key_a = (mid_a, strat_a)
+                key_b = (mid_b, strat_b)
+                key = tuple(sorted([key_a, key_b]))
                 hits = (len((front_a | front_b) & actual_front)
                         + len((back_a | back_b) & actual_back))
                 s = stats.get(key)
                 if s is None:
                     s = stats[key] = {
-                        "a": label_a, "b": label_b,
+                        "keys": key,
+                        "labels": {key_a: label_a, key_b: label_b},
                         "count": 0, "best": 0, "total": 0, "games": 0,
                     }
                 s["games"] += 1
@@ -340,13 +350,29 @@ def _build_best_combo_html(hist, limit=10, threshold=5):
 
     rows = sorted(
         stats.values(),
-        key=lambda s: (-s["count"], -s["best"],
-                       -(s["total"] / max(s["games"], 1)), s["a"], s["b"]),
+        key=lambda s: (
+            -s["count"], -s["best"],
+            -(s["total"] / max(s["games"], 1)),
+            s["labels"].get(s["keys"][0], ""),
+            s["labels"].get(s["keys"][1], ""),
+        ),
     )
     top = [r for r in rows if r["count"] > 0][:limit]
     if not top:
         return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
                 f'(暂无组合单期达到 {threshold} 球)</p>')
+
+    def _mini(group):
+        if not group:
+            return '<span style="color:#94a3b8">暂无最新预测</span>'
+        fronts = " ".join(group.get("front_balls", []))
+        backs = " ".join(group.get("back_balls", []))
+        return (f'<span style="color:#ef4444">前 {fronts}</span>'
+                f'<span style="color:#cbd5e1"> | </span>'
+                f'<span style="color:#3b82f6">后 {backs}</span>')
+
+    target_period = (pred or {}).get("target_period", "")
+    target_text = f"第 {target_period} 期" if target_period else "最新一期"
 
     cell = "padding:5px 6px;font-size:10px;line-height:1.5;"
     head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
@@ -354,12 +380,19 @@ def _build_best_combo_html(hist, limit=10, threshold=5):
     for i, r in enumerate(top):
         bg = _row_bg(i)
         avg = r["total"] / r["games"] if r["games"] else 0
+        key_a, key_b = r["keys"]
+        label_a = r["labels"].get(key_a, "—")
+        label_b = r["labels"].get(key_b, "—")
+        mini_a = _mini(current.get(key_a))
+        mini_b = _mini(current.get(key_b))
         body += f'''
         <tr style="background:{bg}">
           <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
           <td style="{cell}">
-            <div style="font-weight:600;color:#0f172a">{r["a"]}</div>
-            <div style="color:#64748b;margin-top:1px">+ {r["b"]}</div>
+            <div style="font-weight:600;color:#0f172a">{label_a}</div>
+            <div style="margin-top:1px">{mini_a}</div>
+            <div style="font-weight:600;color:#0f172a;margin-top:4px">+ {label_b}</div>
+            <div style="margin-top:1px">{mini_b}</div>
           </td>
           <td style="{cell}text-align:center;font-weight:700;color:#ef4444">{r["count"]}次</td>
           <td style="{cell}text-align:center;color:#475569">{r["best"]}球</td>
@@ -368,12 +401,12 @@ def _build_best_combo_html(hist, limit=10, threshold=5):
 
     return f'''
     <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
-      两两合并号码并去重，单期命中 ≥{threshold} 球计 1 次 · 按次数取 Top {limit}
+      两两合并号码并去重，单期命中 ≥{threshold} 球计 1 次 · 按次数取 Top {limit} · 小字为{target_text}未开奖预测
     </div>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
       <thead><tr style="background:#f8fafc">
         <th style="{head}text-align:center">#</th>
-        <th style="{head}text-align:left">组合（模型·策略）</th>
+        <th style="{head}text-align:left">组合与最新预测</th>
         <th style="{head}text-align:center">≥{threshold}球次数</th>
         <th style="{head}text-align:center">单期最高</th>
         <th style="{head}text-align:center">平均命中</th>
@@ -698,7 +731,7 @@ def build_html_digest(data, warnings, generated_at, commit_info=None):
         {_SECTION.format("📊 命中排行 Top 8")}
         {_build_ranking_html(hist, limit=8)}
         {_SECTION.format("🏅 最佳组合")}
-        {_build_best_combo_html(hist, limit=10)}
+        {_build_best_combo_html(hist, pred, limit=10)}
         {_SECTION.format("📈 模型分组统计 Top 8")}
         {_build_model_group_html(hist, limit=8)}
         {_SECTION.format("🤖 AI 全部预测")}
