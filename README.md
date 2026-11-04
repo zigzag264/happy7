@@ -36,7 +36,7 @@ happy7/
 ├── email_content_builder.py          # 邮件内容组装
 ├── email_daily_digest.py             # 每日邮件推送
 ├── email_smtp_utils.py               # SMTP 邮件工具
-├── email_push_notify.py              # 每日定时推送邮件
+├── email_push_notify.py              # Push 触发 + 每日定时推送邮件
 ├── test_prediction.py                # 预测格式测试
 ├── update_all.bat                    # 本地一键更新（Windows）
 ├── update_all.sh                     # 本地一键更新（Linux/Mac）
@@ -75,7 +75,7 @@ happy7/
 | 开奖数据抓取 | 每天 21:40 + 12:00 | 开奖后 15 分钟自动抓取 500彩票网最新数据 |
 | 模型预测生成 | 每天 22:00 | 先将上一期预测与开奖结果比对归档，再运行 10 个统计/ML 模型 |
 | 每日邮件推送 | 每天 12:30 | 定时发送当日预测汇总邮件 |
-| 推送通知 | 每天 16:00 | 发送项目更新通知邮件 |
+| 推送通知 | 每次 push 到 master + 每天 16:00 | 代码/数据变更时发送邮件通知，另每天定时推送一次 |
 
 也可在 GitHub 仓库 → Actions 页面手动触发 `workflow_dispatch`。
 

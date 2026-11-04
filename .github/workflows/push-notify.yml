@@ -1,6 +1,9 @@
 name: Push Notification
 
 on:
+  push:
+    branches:
+      - master
   schedule:
     # 每天 UTC 08:00 = 北京时间 16:00
     - cron: '0 8 * * *'
