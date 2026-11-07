@@ -1,6 +1,21 @@
 {
-  "last_updated": "2026-11-07T10:50:28Z",
+  "last_updated": "2026-11-07T18:18:12Z",
   "data": [
+    {
+      "period": "26127",
+      "front_balls": [
+        "05",
+        "06",
+        "17",
+        "18",
+        "27"
+      ],
+      "back_balls": [
+        "03",
+        "12"
+      ],
+      "date": "2026-11-07"
+    },
     {
       "period": "26126",
       "front_balls": [
@@ -993,10 +1008,10 @@
     }
   ],
   "next_draw": {
-    "next_period": "26127",
-    "next_date": "2026-11-07",
-    "next_date_display": "2026年11月07日",
-    "weekday": "周六",
+    "next_period": "26128",
+    "next_date": "2026-11-09",
+    "next_date_display": "2026年11月09日",
+    "weekday": "周一",
     "draw_time": "21:25"
   }
 }
