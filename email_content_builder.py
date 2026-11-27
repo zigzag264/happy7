@@ -196,32 +196,53 @@ def _build_predictions_html(pred, latest_period="", next_period="", hist=None):
     )
 
     cell = "padding:4px 8px;font-size:11px;line-height:1.5;"
-    tables = ""
-    for m in models:
-        rows = ""
-        for i, g in enumerate(m.get("predictions", []), 1):
+    head = "padding:6px 8px;font-size:10px;color:#1e40af;font-weight:700;"
+    body = ""
+    for mi, m in enumerate(models):
+        preds = m.get("predictions", [])
+        span = max(len(preds), 1)
+        model_bg = "#eff6ff" if mi % 2 == 0 else "#f8fafc"
+        sep = ";border-top:1px solid #e2e8f0" if mi > 0 else ""
+        if not preds:
+            body += f'''
+            <tr style="background:#ffffff">
+              <td style="{cell}font-weight:700;color:#1e40af;white-space:nowrap;vertical-align:top;background:{model_bg}{sep}">{m["model_name"]}</td>
+              <td style="{cell}text-align:center;color:#94a3b8{sep}">—</td>
+              <td style="{cell}color:#94a3b8{sep}">暂无预测</td>
+              <td style="{cell}color:#94a3b8{sep}">—</td>
+            </tr>'''
+            continue
+        for i, g in enumerate(preds, 1):
             fronts = "".join(_ball(b, "front") for b in g.get("front_balls", []))
             backs = "".join(_ball(b, "back") for b in g.get("back_balls", []))
-            bg = "#f8fafc" if i % 2 == 1 else "#ffffff"
-            rows += f'''
+            bg = "#ffffff" if i % 2 == 1 else "#f8fafc"
+            first = (i == 1)
+            row_sep = sep if first else ""
+            model_cell = ""
+            if first:
+                model_cell = (f'<td rowspan="{span}" style="{cell}font-weight:700;color:#1e40af;'
+                              f'white-space:nowrap;vertical-align:top;background:{model_bg}{sep}">{m["model_name"]}</td>')
+            body += f'''
             <tr style="background:{bg}">
-              <td style="{cell}width:34px;text-align:center;color:#3b82f6;font-weight:700;font-size:10px">G{g.get("group_id", i)}</td>
-              <td style="{cell}font-weight:600;color:#0f172a;white-space:nowrap">{g.get("strategy", "—")}</td>
-              <td style="{cell}white-space:nowrap">{fronts}<span style="color:#94a3b8;margin:0 3px">|</span>{backs}</td>
+              {model_cell}
+              <td style="{cell}width:34px;text-align:center;color:#3b82f6;font-weight:700;font-size:10px{row_sep}">G{g.get("group_id", i)}</td>
+              <td style="{cell}font-weight:600;color:#0f172a;white-space:nowrap{row_sep}">{g.get("strategy", "—")}</td>
+              <td style="{cell}white-space:nowrap{row_sep}">{fronts}<span style="color:#94a3b8;margin:0 3px">|</span>{backs}</td>
             </tr>'''
-        tables += f'''
-        <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:8px">
-          <thead><tr style="background:#eff6ff">
-            <th colspan="3" style="padding:7px 10px;text-align:left;font-size:12px;color:#1e40af;font-weight:700">{m["model_name"]}</th>
-          </tr></thead>
-          <tbody>{rows}</tbody>
-        </table>'''
     return f'''
     {warn}
     <div style="font-size:11px;color:#64748b;margin-bottom:8px">
       目标期号: {pred.get("target_period","")} · 预测日期: {pred.get("prediction_date","")} · 模型数: {len(pred["models"])}
     </div>
-    {tables}'''
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#eff6ff">
+        <th style="{head}text-align:left">模型</th>
+        <th style="{head}text-align:center;width:34px">组</th>
+        <th style="{head}text-align:left">策略</th>
+        <th style="{head}text-align:left">号码（前区 | 后区）</th>
+      </tr></thead>
+      <tbody>{body}</tbody>
+    </table>'''
 
 
 def _medal(index):
