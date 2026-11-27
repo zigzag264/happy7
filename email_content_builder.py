@@ -645,6 +645,166 @@ def _build_best_blue_combo_html(hist, pred=None, limit=10, threshold=2):
     </table>'''
 
 
+def _build_extreme3_combo_html(hist, pred=None, limit=10, threshold=3):
+    """极3组合 — 沿用「最佳组合」的两两合并逻辑:
+    合并两个不同「模型+策略」的前区、后区号码并各自去重,
+    单期「前区+后区」总命中 >= threshold 球计 1 次,按次数取 Top N。
+    每个模型+策略下方用小字显示其最新未开奖预测。
+    """
+    records = hist.get("predictions_history", []) if hist else []
+    if not records:
+        return '<p style="color:#94a3b8;font-size:11px;padding:10px">(暂无命中记录)</p>'
+
+    current = {}
+    if pred:
+        for model in pred.get("models", []):
+            for group in model.get("predictions", []):
+                current[(model.get("model_id"), group.get("strategy"))] = group
+    group_map = _build_group_map(pred)
+
+    stats = {}
+    group_stats = {}  # (model_id, strategy) -> 该组自身历史总命中 / 期数 / >=threshold 次数
+    for rec in records:
+        actual = rec.get("actual_result") or {}
+        actual_front = set(actual.get("front_balls", []))
+        actual_back = set(actual.get("back_balls", []))
+
+        entries = []
+        for model in rec.get("models", []):
+            model_id = model.get("model_id", "")
+            model_name = model.get("model_name", "—")
+            for group in model.get("predictions", []):
+                hr = group.get("hit_result")
+                if not hr:
+                    continue
+                strategy = group.get("strategy", "—")
+                gid = group_map.get(model_id, {}).get(strategy)
+                short = _short_model_name(model_id, model_name)
+                label = f"{short}·{gid}" if gid else f"{short}·{strategy}"
+                gs = group_stats.setdefault(
+                    (model_id, strategy), {"total": 0, "games": 0, "full": 0})
+                total = hr.get("total_hits", 0)
+                gs["total"] += total
+                gs["games"] += 1
+                if total >= threshold:
+                    gs["full"] += 1
+                entries.append((
+                    model_id, strategy, label,
+                    set(group.get("front_balls", [])),
+                    set(group.get("back_balls", [])),
+                ))
+
+        for i in range(len(entries)):
+            mid_a, strat_a, label_a, front_a, back_a = entries[i]
+            for j in range(i + 1, len(entries)):
+                mid_b, strat_b, label_b, front_b, back_b = entries[j]
+                if mid_a == mid_b and strat_a == strat_b:
+                    continue
+                key_a = (mid_a, strat_a)
+                key_b = (mid_b, strat_b)
+                key = tuple(sorted([key_a, key_b]))
+                side_a_hits = len(front_a & actual_front) + len(back_a & actual_back)
+                side_b_hits = len(front_b & actual_front) + len(back_b & actual_back)
+                front_hits = len((front_a | front_b) & actual_front)
+                back_hits = len((back_a | back_b) & actual_back)
+                total_hits = front_hits + back_hits
+                s = stats.get(key)
+                if s is None:
+                    s = stats[key] = {
+                        "keys": key,
+                        "labels": {key_a: label_a, key_b: label_b},
+                        "count": 0, "max_total": 0, "max_single": 0,
+                        "total_hits": 0, "games": 0,
+                    }
+                s["games"] += 1
+                s["total_hits"] += total_hits
+                s["max_total"] = max(s["max_total"], total_hits)
+                s["max_single"] = max(s["max_single"], side_a_hits, side_b_hits)
+                if total_hits >= threshold:
+                    s["count"] += 1
+
+    rows = sorted(
+        stats.values(),
+        key=lambda s: (
+            -s["count"], -s["max_total"], -s["max_single"],
+            -(s["total_hits"] / max(s["games"], 1)),
+            s["labels"].get(s["keys"][0], ""),
+            s["labels"].get(s["keys"][1], ""),
+        ),
+    )
+    # 每个「模型+策略」在 Top 列表中最多出现 2 次，避免同一强组霸榜
+    top, appearances = [], {}
+    for r in rows:
+        if len(top) >= limit:
+            break
+        if r["count"] <= 0:
+            break
+        if any(appearances.get(k, 0) >= 2 for k in r["keys"]):
+            continue
+        for k in r["keys"]:
+            appearances[k] = appearances.get(k, 0) + 1
+        top.append(r)
+    if not top:
+        return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
+                f'(暂无组合单期总命中达到 {threshold} 球)</p>')
+
+    def _mini(group, key):
+        if not group:
+            return '<span style="color:#94a3b8">暂无最新预测</span>'
+        fronts = " ".join(group.get("front_balls", []))
+        backs = " ".join(group.get("back_balls", []))
+        gs = group_stats.get(key)
+        stat = (f'<span style="color:#94a3b8">（{gs["total"]}球/{gs["games"]}期 · '
+                f'≥{threshold}球{gs["full"]}次）</span>' if gs else "")
+        return (f'<span style="color:#ef4444">前 {fronts}</span> '
+                f'<span style="color:#3b82f6">后 {backs}</span>{stat}')
+
+    target_period = (pred or {}).get("target_period", "")
+    target_text = f"第 {target_period} 期" if target_period else "最新一期"
+
+    cell = "padding:5px 6px;font-size:10px;line-height:1.5;"
+    head = "padding:5px 6px;color:#64748b;font-size:10px;font-weight:600;background:#f8fafc;"
+    body = ""
+    for i, r in enumerate(top):
+        bg = _row_bg(i)
+        # 组内按各自命中总球数降序，球数高的排上方
+        ordered = sorted(
+            r["keys"],
+            key=lambda k: (-group_stats.get(k, {}).get("total", 0), r["labels"].get(k, "")),
+        )
+        blocks = ""
+        for idx, key in enumerate(ordered):
+            label = r["labels"].get(key, "—")
+            mini = _mini(current.get(key), key)
+            prefix = "+ " if idx else ""
+            margin = "margin-top:2px;" if idx else ""
+            blocks += f'''
+            <div style="font-weight:600;color:#0f172a;white-space:nowrap;{margin}">{prefix}{label}<span style="margin-left:5px;font-weight:400">{mini}</span></div>'''
+        body += f'''
+        <tr style="background:{bg}">
+          <td style="{cell}text-align:center;font-weight:700">{_medal(i)}</td>
+          <td style="{cell}">{blocks}</td>
+          <td style="{cell}text-align:center;color:#475569">{r["count"]}次</td>
+          <td style="{cell}text-align:center;color:#475569">{r["max_total"]}球</td>
+          <td style="{cell}text-align:center;color:#475569">{r["max_single"]}球</td>
+        </tr>'''
+
+    return f'''
+    <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
+      沿用最佳组合两两合并逻辑：两个不同「模型+策略」前区、后区号码各自去重，单期「前区+后区」总球数 ≥{threshold} 计 1 次 · 按次数/去重最高/单个模型最高排序取 Top {limit} · 每个模型+策略最多出现 2 次 · 每行一组，号码显示{target_text}前区+后区未开奖预测，括号内为该组自身历史总命中/期数及 ≥{threshold} 球次数
+    </div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
+        <th style="{head}text-align:center">#</th>
+        <th style="{head}text-align:left">组合与前区+后区预测</th>
+        <th style="{head}text-align:center">总球数≥{threshold}</th>
+        <th style="{head}text-align:center">去重最高</th>
+        <th style="{head}text-align:center">单个模型最高</th>
+      </tr></thead>
+      <tbody>{body}</tbody>
+    </table>'''
+
+
 def _build_latest_ranking_html(hist, limit=10):
     """最新一期命中排行 Top N（仅表格）"""
     records = hist.get("predictions_history", []) if hist else []
@@ -1133,6 +1293,8 @@ def build_html_digest(data, warnings, generated_at, commit_info=None, inline_ima
         {_build_best_combo_html(hist, pred, limit=10)}
         {_SECTION.format("🏅 最蓝组合")}
         {_build_best_blue_combo_html(hist, pred, limit=10)}
+        {_SECTION.format("⚡ 极3组合")}
+        {_build_extreme3_combo_html(hist, pred, limit=10)}
         {_SECTION.format("🤖 AI 全部预测")}
         {_build_predictions_html(pred, latest_period, next_period, hist)}
       </div>
