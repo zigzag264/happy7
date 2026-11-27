@@ -386,6 +386,35 @@ def _build_ball_hit_html(records):
     </table>'''
 
 
+def _pick_top_combos(rows, limit, pair_max=2, model_max=4):
+    """从已按优先级排序的组合中挑选 Top N，施加双重上限：
+
+    - 每个「模型+策略」最多出现 pair_max 次（默认 2）
+    - 每个模型（不分策略）最多出现 model_max 次（默认 4）
+
+    rows 每项含 keys：((model_id, strategy), (model_id, strategy))，
+    单条组合会同时占用其两个成员的配额。
+    """
+    top, pair_appear, model_appear = [], {}, {}
+    for r in rows:
+        if len(top) >= limit:
+            break
+        pair_inc, model_inc = {}, {}
+        for mid, strat in r["keys"]:
+            pair_inc[(mid, strat)] = pair_inc.get((mid, strat), 0) + 1
+            model_inc[mid] = model_inc.get(mid, 0) + 1
+        if any(pair_appear.get(k, 0) + inc > pair_max for k, inc in pair_inc.items()):
+            continue
+        if any(model_appear.get(m, 0) + inc > model_max for m, inc in model_inc.items()):
+            continue
+        for k, inc in pair_inc.items():
+            pair_appear[k] = pair_appear.get(k, 0) + inc
+        for m, inc in model_inc.items():
+            model_appear[m] = model_appear.get(m, 0) + inc
+        top.append(r)
+    return top
+
+
 def _build_best_combo_html(hist, pred=None, limit=10, front_threshold=4):
     """最佳组合 — 两两合并两个「模型+策略」的号码并去重,
     单期前区命中 >= front_threshold 球计 1 次,按次数取 Top N。
@@ -463,18 +492,8 @@ def _build_best_combo_html(hist, pred=None, limit=10, front_threshold=4):
             s["labels"].get(s["keys"][1], ""),
         ),
     )
-    # 每个「模型+策略」在 Top 列表中最多出现 2 次，避免同一强组霸榜
-    top, appearances = [], {}
-    for r in rows:
-        if len(top) >= limit:
-            break
-        if r["front_count"] <= 0:
-            break
-        if any(appearances.get(k, 0) >= 2 for k in r["keys"]):
-            continue
-        for k in r["keys"]:
-            appearances[k] = appearances.get(k, 0) + 1
-        top.append(r)
+    # 每个「模型+策略」最多出现 2 次、每个模型最多出现 4 次，避免同一强组霸榜
+    top = _pick_top_combos([r for r in rows if r["front_count"] > 0], limit)
     if not top:
         return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
                 f'(暂无组合单期前区命中达到 {front_threshold} 球)</p>')
@@ -519,7 +538,7 @@ def _build_best_combo_html(hist, pred=None, limit=10, front_threshold=4):
 
     return f'''
     <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
-      两两合并号码并去重，单期前区总球数 ≥{front_threshold} 计 1 次 · 按次数/去重最高/单个模型最高排序取 Top {limit} · 每个模型+策略最多出现 2 次 · 每行一组，号码仅显示{target_text}前区未开奖预测，括号内为该组自身历史前区命中/期数
+      两两合并号码并去重，单期前区总球数 ≥{front_threshold} 计 1 次 · 按次数/去重最高/单个模型最高排序取 Top {limit} · 每个模型+策略最多出现 2 次、每个模型最多出现 4 次 · 每行一组，号码仅显示{target_text}前区未开奖预测，括号内为该组自身历史前区命中/期数
     </div>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
       <thead><tr style="background:#f8fafc">
@@ -608,7 +627,8 @@ def _build_best_blue_combo_html(hist, pred=None, limit=10, threshold=2):
             tuple(s["labels"].get(k, "") for k in s["keys"]),
         ),
     )
-    top = [r for r in rows if r["count"] > 0][:limit]
+    # 每个「模型+策略」最多出现 2 次、每个模型最多出现 4 次，避免同一强组霸榜
+    top = _pick_top_combos([r for r in rows if r["count"] > 0], limit)
     if not top:
         return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
                 f'(暂无组合单期覆盖 {threshold} 个蓝球)</p>')
@@ -653,7 +673,7 @@ def _build_best_blue_combo_html(hist, pred=None, limit=10, threshold=2):
 
     return f'''
     <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
-      两组不同模型+策略后区蓝球合并去重，单期覆盖 {threshold} 个蓝球计 1 次 · 按次数取 Top {limit} · 每行一组，号码仅显示{target_text}后区未开奖预测，括号内为该组自身历史蓝球命中/期数及 {threshold} 蓝球全中次数
+      两组不同模型+策略后区蓝球合并去重，单期覆盖 {threshold} 个蓝球计 1 次 · 按次数取 Top {limit} · 每个模型+策略最多出现 2 次、每个模型最多出现 4 次 · 每行一组，号码仅显示{target_text}后区未开奖预测，括号内为该组自身历史蓝球命中/期数及 {threshold} 蓝球全中次数
     </div>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
       <thead><tr style="background:#f8fafc">
@@ -753,18 +773,8 @@ def _build_extreme3_combo_html(hist, pred=None, limit=10, threshold=3):
             s["labels"].get(s["keys"][1], ""),
         ),
     )
-    # 每个「模型+策略」在 Top 列表中最多出现 2 次，避免同一强组霸榜
-    top, appearances = [], {}
-    for r in rows:
-        if len(top) >= limit:
-            break
-        if r["count"] <= 0:
-            break
-        if any(appearances.get(k, 0) >= 2 for k in r["keys"]):
-            continue
-        for k in r["keys"]:
-            appearances[k] = appearances.get(k, 0) + 1
-        top.append(r)
+    # 每个「模型+策略」最多出现 2 次、每个模型最多出现 4 次，避免同一强组霸榜
+    top = _pick_top_combos([r for r in rows if r["count"] > 0], limit)
     if not top:
         return (f'<p style="color:#94a3b8;font-size:11px;padding:10px">'
                 f'(暂无组合单期总命中达到 {threshold} 球)</p>')
@@ -812,7 +822,7 @@ def _build_extreme3_combo_html(hist, pred=None, limit=10, threshold=3):
 
     return f'''
     <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">
-      沿用最佳组合两两合并逻辑：两个不同「模型+策略」前区、后区号码各自去重，单期「前区+后区」总球数 ≥{threshold} 计 1 次 · 按次数/去重最高/单个模型最高排序取 Top {limit} · 每个模型+策略最多出现 2 次 · 每行一组，号码显示{target_text}前区+后区未开奖预测，括号内为该组自身历史总命中/期数及 ≥{threshold} 球次数
+      沿用最佳组合两两合并逻辑：两个不同「模型+策略」前区、后区号码各自去重，单期「前区+后区」总球数 ≥{threshold} 计 1 次 · 按次数/去重最高/单个模型最高排序取 Top {limit} · 每个模型+策略最多出现 2 次、每个模型最多出现 4 次 · 每行一组，号码显示{target_text}前区+后区未开奖预测，括号内为该组自身历史总命中/期数及 ≥{threshold} 球次数
     </div>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
       <thead><tr style="background:#f8fafc">
